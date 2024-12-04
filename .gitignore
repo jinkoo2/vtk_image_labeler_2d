@@ -1,0 +1,118 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Packages
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+wheels/
+shared/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+# Usually contains the executable and other build artifacts
+/build/
+dist/
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+*.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# Environment files
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# Cython debug symbols
+cython_debug/
+
+# Qt Designer files and generated PyQt files
+*.ui
+*.qrc
+*.pyi
+
+# Local settings and database files
+*.sqlite3
+*.db
+
+# Logs and debugging files
+*.log
+*.trace
+*.out
+
+# Compiled object files and binaries
+*.o
+*.obj
+*.dll
+*.class
+*.exe
+*.pdb
+
+# Application cache and temporary files
+cache/
+tmp/
+temp/
+*.bak
+*.swp
+*.swo
+
+# IDE and editor files
+.idea/
+.vscode/
+*.iml
+
+# Python virtual environment directories
+.Python
+
+# Ignore secrets/configuration files
+secrets.json
+config.json
+*.key
+*.pem
+*.crt
+
+# Ignore all files and folders starting with '_'
+_*
