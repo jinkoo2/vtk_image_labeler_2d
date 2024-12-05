@@ -11,6 +11,10 @@ import cv2
 
 import os
 
+from segmentation_manager import SegmentationManager
+sm = SegmentationManager()
+sm.say_hello()
+
 # Get the current directory of the script
 current_dir = os.path.dirname(__file__)
 
@@ -22,57 +26,6 @@ reset_zoom_icon_path = os.path.join(current_dir, "icons", "reset_zoom.png")
 
 ### helper functions
 import numpy as np
-
-
-def generate_random_bright_color():
-    # Generate a random hue (0-360 degrees)
-    hue = np.random.uniform(0, 360)
-
-    # Set high saturation and value (brightness)
-    saturation = np.random.uniform(0.8, 1.0)
-    value = np.random.uniform(0.8, 1.0)
-
-    # Convert HSV to RGB
-    color = hsv_to_rgb(hue, saturation, value)
-
-    # Return as an RGB array
-    return np.array(color)
-
-def hsv_to_rgb(h, s, v):
-    """
-    Convert HSV (Hue, Saturation, Value) to RGB.
-    h: Hue (0-360 degrees)
-    s: Saturation (0-1)
-    v: Value (0-1)
-    Returns: (R, G, B) as a tuple of integers (0-255)
-    """
-    h = float(h)
-    s = float(s)
-    v = float(v)
-
-    c = v * s
-    x = c * (1 - abs((h / 60) % 2 - 1))
-    m = v - c
-
-    if 0 <= h < 60:
-        r, g, b = c, x, 0
-    elif 60 <= h < 120:
-        r, g, b = x, c, 0
-    elif 120 <= h < 180:
-        r, g, b = 0, c, x
-    elif 180 <= h < 240:
-        r, g, b = 0, x, c
-    elif 240 <= h < 300:
-        r, g, b = x, 0, c
-    else:  # 300 <= h < 360
-        r, g, b = c, 0, x
-
-    r = (r + m) * 255
-    g = (g + m) * 255
-    b = (b + m) * 255
-
-    return int(r), int(g), int(b)
-
 
 class ColorRotator:
     def __init__(self):
@@ -105,6 +58,83 @@ class SegmentationLayer:
         self.color = color
         self.alpha = alpha
 
+class Point:
+    def __init__(self, x: int, y: int, name:str, color: tuple = (255, 0, 0), visible: bool = True):
+        self.x = x
+        self.y = y
+        self.name = name
+        self.color = color
+        self.visible = visible
+
+class PointItemWidget(QWidget):
+    def __init__(self, point, parent_manager):
+        super().__init__()
+        self.point = point
+        self.parent_manager = parent_manager
+
+        # Layout
+        self.layout = QHBoxLayout()
+        self.layout.setContentsMargins(0, 0, 0, 0)
+
+        # Visibility checkbox
+        self.checkbox = QCheckBox()
+        self.checkbox.setChecked(self.point.visible)
+        self.checkbox.stateChanged.connect(self.toggle_visibility)
+        self.layout.addWidget(self.checkbox)
+
+        # Color patch
+        self.color_patch = QLabel()
+        self.color_patch.setFixedSize(16, 16)
+        self.color_patch.setStyleSheet(f"background-color: {self.get_color_hex()}; border: 1px solid black;")
+        self.color_patch.setCursor(Qt.PointingHandCursor)
+        self.color_patch.mousePressEvent = self.change_color
+        self.layout.addWidget(self.color_patch)
+
+        # Editable name
+        self.name_label = QLabel(self.point.name)
+        self.name_label.setCursor(Qt.PointingHandCursor)
+        self.name_label.mouseDoubleClickEvent = self.activate_editor
+        self.layout.addWidget(self.name_label)
+
+        self.name_editor = QLineEdit(self.point.name)
+        self.name_editor.setVisible(False)
+        self.name_editor.returnPressed.connect(self.deactivate_editor)
+        self.name_editor.editingFinished.connect(self.deactivate_editor)
+        self.layout.addWidget(self.name_editor)
+
+        self.setLayout(self.layout)
+
+    def toggle_visibility(self, state):
+        self.point.visible = state == Qt.Checked
+        self.parent_manager.update_points()
+
+    def change_color(self, event):
+        color = QColorDialog.getColor()
+        if color.isValid():
+            self.point.color = (color.red(), color.green(), color.blue())
+            self.color_patch.setStyleSheet(f"background-color: {color.name()}; border: 1px solid black;")
+            self.parent_manager.update_points()
+
+    def activate_editor(self, event):
+        self.name_label.hide()
+        self.name_editor.show()
+        self.name_editor.setFocus()
+        self.name_editor.selectAll()
+
+    def deactivate_editor(self):
+        new_name = self.name_editor.text().strip()
+        if new_name and self.parent_manager.is_name_unique(new_name):
+            self.point.name = new_name
+            self.name_label.setText(new_name)
+        else:
+            self.parent_manager.parent_viewer.print_status("Name must be unique or valid!")
+        self.name_label.show()
+        self.name_editor.hide()
+
+    def get_color_hex(self):
+        r, g, b = self.point.color
+        return f"rgb({r}, {g}, {b})"
+
 
 class ImageWindowLevelRenderer:
     def __init__(self) -> None:
@@ -133,7 +163,134 @@ class ImageWindowLevelRenderer:
         adjusted_image = self.apply_window_level(image_array, level, width)
         return adjusted_image
     
-class SegmentationLayerRenderer:
+class PointListRenderer:
+    def __init__(self) -> None:
+        self.points = []  # List of Point objects
+        self.active_point_index = None  # Index of the active point
+        self.dragging_point = False  # State for dragging
+        self.point_edit_active = False
+
+    def render(self, overlay_rgb):
+        # Render each layer if it is visible
+        for i, point in enumerate(self.points):
+            if point.visible:
+                color = point.color
+                x, y = point.x, point.y
+                cv2.circle(overlay_rgb, (x, y), radius=5, color=color, thickness=-1)
+                if i == self.active_point_index:
+                    # Draw a larger circle around the active point
+                    cv2.circle(overlay_rgb, (x, y), radius=8, color=(255, 255, 255), thickness=1)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            if self.point_edit_active:
+                # Handle point editing
+                scene_pos = self.mapToScene(event.pos())
+                x, y = int(scene_pos.x()), int(scene_pos.y())
+                for i, point in enumerate(self.points):
+                    if (point.x - x) ** 2 + (point.y - y) ** 2 <= 5 ** 2:  # Check proximity
+                        self.active_point_index = i
+                        self.dragging_point = True
+                        self.parent_viewer.update_point_manager()
+                        return
+    
+    def mouseMoveEvent(self, event):
+        if self.point_edit_active and self.dragging_point and self.active_point_index is not None:
+            # Move the active point
+            scene_pos = self.mapToScene(event.pos())
+            x, y = int(scene_pos.x()), int(scene_pos.y())
+            self.points[self.active_point_index].x = x
+            self.points[self.active_point_index].y = y
+            self.parent_viewer.update_point_manager()
+            self.render_layers()
+
+    def mouseReleaseEvent(self, event):
+        if self.point_edit_active and event.button() == Qt.LeftButton:
+            self.dragging_point = False
+
+class PointManager(QWidget):
+    def __init__(self, parent_viewer):
+        super().__init__()
+        self.parent_viewer = parent_viewer
+        self.layout = QVBoxLayout()
+
+        # List of points
+        self.point_list = QListWidget()
+        self.point_list.currentItemChanged.connect(self.on_point_selected)
+        self.layout.addWidget(self.point_list)
+
+        # Add/Remove buttons
+        button_layout = QHBoxLayout()
+        add_point_button = QPushButton("Add Point")
+        add_point_button.clicked.connect(self.add_point)
+        remove_point_button = QPushButton("Remove Point")
+        remove_point_button.clicked.connect(self.remove_point)
+        button_layout.addWidget(add_point_button)
+        button_layout.addWidget(remove_point_button)
+        self.layout.addLayout(button_layout)
+
+        self.setLayout(self.layout)
+
+    def add_point(self):
+        """Add a new point with a unique name, placing it at the center of the viewport."""
+        name = self.generate_unique_name()
+        
+        # Get the center of the viewport in scene coordinates
+        viewport_center = self.parent_viewer.graphics_view.mapToScene(
+            self.parent_viewer.graphics_view.viewport().rect().center()
+        )
+        x, y = int(viewport_center.x()), int(viewport_center.y())
+
+        # Create the new point at the center of the viewport
+        new_point = Point(x, y, name)
+        self.parent_viewer.graphics_view.pointlist_renderer.points.append(new_point)
+        self.update_point_list()
+
+        # Update the graphics view to render the new point
+        self.parent_viewer.graphics_view.render_layers()
+
+
+    def remove_point(self):
+        """Remove the selected point."""
+        current_row = self.point_list.currentRow()
+        if current_row != -1:
+            del self.parent_viewer.graphics_view.points[current_row]
+            self.parent_viewer.graphics_view.active_point_index = None
+            self.update_point_list()
+
+    def on_point_selected(self, current, previous):
+        """Set the selected point as active."""
+        if current:
+            index = self.point_list.row(current)
+            self.parent_viewer.graphics_view.active_point_index = index
+
+    def update_point_list(self):
+        """Update the point list."""
+        self.point_list.clear()
+        for point in self.parent_viewer.graphics_view.pointlist_renderer.points:
+            item = QListWidgetItem(self.point_list)
+            item_widget = PointItemWidget(point, self)
+            item.setSizeHint(item_widget.sizeHint())
+            self.point_list.addItem(item)
+            self.point_list.setItemWidget(item, item_widget)
+
+    def generate_unique_name(self, base_name="Point"):
+        """Generate a unique name for a new point."""
+        index = 1
+        while any(p.name == f"{base_name} {index}" for p in self.parent_viewer.graphics_view.points):
+            index += 1
+        return f"{base_name} {index}"
+
+    def is_name_unique(self, name):
+        """Check if a name is unique."""
+        return not any(p.name == name for p in self.parent_viewer.graphics_view.points)
+
+    def update_points(self):
+        """Re-render points in the graphics view."""
+        self.parent_viewer.graphics_view.render_layers()
+
+
+class SegmentationLayerRenderer():
     def __init__(self, layers) -> None:
         self.layers = layers
 
@@ -149,7 +306,7 @@ class SegmentationLayerRenderer:
                 color_array = np.array(color, dtype=np.float32)
                 overlay_rgb[mask] = (1 - alpha) * overlay_rgb[mask] + alpha * color_array
         return overlay_rgb
-
+    
 class CirclePaintBrush:
     def __init__(self, radius, color, line_thickness) -> None:
         self.radius = radius
@@ -186,10 +343,16 @@ class GraphicsView2D(QGraphicsView):
         self.min_zoom = 0.5  # Minimum zoom factor
         self.max_zoom = 5.0  # Maximum zoom factor
 
+        # point data
+        self.points = []  # List of Point objects
+        self.active_point_index = None  # Index of the active point
+        self.dragging_point = False  # State for dragging
+
         # renderers
         self.segmentation_layer_renderer = SegmentationLayerRenderer(parent_viewer.segmentation_layers)
         self.image_window_level_renderer = ImageWindowLevelRenderer()
         self.paintbrush_renderer = PaintBrushRenderer(self.paintbrush)
+        self.pointlist_renderer = PointListRenderer()  
 
     def get_image_array(self):
         return self.parent_viewer.image_array
@@ -237,9 +400,14 @@ class GraphicsView2D(QGraphicsView):
         self.print_status(f"Zoom: {self.zoom_factor:.2f}x")
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton and self.get_image_array() is not None:
+        if self.get_image_array() is None:
+            return 
+
+        if event.button() == Qt.LeftButton:
             if self.parent_viewer.brush_active:
                 self.paint_on_active_layer(event)
+        
+        self.pointlist_renderer.mouseMoveEvent(event)
 
     def mouseMoveEvent(self, event):
         image_array = self.get_image_array()
@@ -268,6 +436,7 @@ class GraphicsView2D(QGraphicsView):
             pixel_value = image_array[y, x]
             self.parent_viewer.status_bar.showMessage(f"Mouse: ({x}, {y}) | Pixel Value: {pixel_value}")
 
+        self.pointlist_renderer.mouseMoveEvent(event)
 
     def paint_on_active_layer(self, event):
         layer_data = self.parent_viewer.get_active_layer_data()
@@ -319,6 +488,8 @@ class GraphicsView2D(QGraphicsView):
             self.paintbrush.radius = self.parent_viewer.brush_size_slider.value()
             self.paintbrush_renderer.render(overlay_rgb, brush_x, brush_y)
 
+        self.pointlist_renderer.render(overlay_rgb)
+
         # Convert the final overlay image to QImage and display it
         height, width, channel = overlay_rgb.shape
         qimage = QImage(overlay_rgb.data, width, height, 3 * width, QImage.Format_RGB888)
@@ -330,7 +501,10 @@ class GraphicsView2D(QGraphicsView):
         self.render_layers()
         
     def mouseReleaseEvent(self, event):
-        pass
+        if self.get_image_array() is None:
+            return 
+        
+        self.pointlist_renderer.mouseReleaseEvent(event)
 
 from PyQt5.QtWidgets import QWidget, QHBoxLayout, QCheckBox, QLabel, QListWidgetItem, QColorDialog
 
@@ -544,7 +718,7 @@ class MainWindow(QMainWindow):
         
     def init_ui(self):
         self.setWindowTitle("Image Labeler 2D")
-        self.setGeometry(100, 100, 800, 600)
+        self.setGeometry(100, 100, 1024, 786)
 
         self.main_widget = QWidget()
         self.layout = QVBoxLayout()
@@ -561,10 +735,15 @@ class MainWindow(QMainWindow):
 
         # Add the File menu
         self.create_menu()
+      
+        
         self.create_file_toolbar()
         self.create_paintbrush_toolbar()
         self.create_view_toolbar()
         self.create_layer_manager()
+
+        self.create_point_manager()
+        self.create_point_edit_toolbar()
 
         # Add status bar
         self.status_bar = self.statusBar()
@@ -628,6 +807,33 @@ class MainWindow(QMainWindow):
         save_action = QAction("Save", self)
         save_action.triggered.connect(self.save_segmentation)
         toolbar.addAction(save_action)
+
+    def create_point_manager(self):
+        # Create a dockable widget
+        dock = QDockWidget("Point List Manager", self)
+        dock.setAllowedAreas(Qt.RightDockWidgetArea)
+        self.addDockWidget(Qt.RightDockWidgetArea, dock)
+
+        # Create the PointManager widget
+        self.point_manager = PointManager(self)
+        dock.setWidget(self.point_manager)
+
+    def create_point_edit_toolbar(self):
+        # Create a PointEdit toolbar
+        toolbar = QToolBar("PointEdit Toolbar", self)
+        self.addToolBar(Qt.TopToolBarArea, toolbar)
+
+        # Add toggle button for point editing
+        self.graphics_view.pointlist_renderer.point_edit_active = False  # Initially inactive
+        self.point_edit_action = QAction("Edit Points", self)
+        self.point_edit_action.setCheckable(True)  # Make it toggleable
+        self.point_edit_action.setChecked(self.graphics_view.pointlist_renderer.point_edit_active)  # Sync with initial state
+        self.point_edit_action.triggered.connect(self.toggle_point_edit)
+        toolbar.addAction(self.point_edit_action)
+        
+    def update_point_manager(self):
+        """Update the point manager UI when points change."""
+        self.point_manager.update_point_list()
 
     def create_paintbrush_toolbar(self):
         # Create a toolbar
@@ -701,7 +907,7 @@ class MainWindow(QMainWindow):
 
     def create_layer_manager(self):
         # Create a dockable widget
-        dock = QDockWidget("Layer Manager", self)
+        dock = QDockWidget("Segmentation Layer Manager ", self)
         dock.setAllowedAreas(Qt.RightDockWidgetArea)
         self.addDockWidget(Qt.RightDockWidgetArea, dock)
 
@@ -758,6 +964,14 @@ class MainWindow(QMainWindow):
             self.erase_action.setText("Erase Tool (Inactive)")
             self.status_bar.showMessage("Erase tool deactivated")    
                 
+
+    def toggle_point_edit(self):
+        self.graphics_view.pointlist_renderer.point_edit_active = not self.graphics_view.pointlist_renderer.point_edit_active
+        self.point_edit_action.setChecked(self.graphics_view.pointlist_renderer.point_edit_active)
+        if self.graphics_view.pointlist_renderer.point_edit_active:
+            self.print_status("Point editing activated.")
+        else:
+            self.print_status("Point editing deactivated.")
 
     def layer_list_widget_on_current_item_changed(self, current, previous):
         if current:
