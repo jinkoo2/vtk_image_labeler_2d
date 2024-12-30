@@ -536,7 +536,11 @@ class SegmentationListManager:
     def request_view_update(self):
         pass
 
-    def on_image_loaded(self, image_array):
+    def on_image_loaded(self, sitk_image):
+        
+        self.sitk_image = sitk_image
+
+        image_array = sitk.GetArrayFromImage(sitk_image)[0]
 
         self.image_array = image_array
 
@@ -551,33 +555,89 @@ class SegmentationListManager:
         layer_data = self.segmentation_layers[self.active_layer_name]
 
         return layer_data
-    
-    def save_segmentation(self):
+
+    def save_segmentation_layer(self, segmentation, file_path):
+
+        # Expand 2D segmentation into 3D (single slice)
+        segmentation_3d = np.expand_dims(segmentation, axis=0)
+        segmentation_image = sitk.GetImageFromArray(segmentation_3d)
+
+        # Copy spatial metadata from the base
+        segmentation_image.CopyInformation(self.sitk_image)
+
+        # Save the segmentation as .mha
+        sitk.WriteImage(segmentation_image, file_path,useCompression=True)
+
+    def save_active_segmentation(self):
         
         if self.image_array is None:
-            self.print_status("No image loaded. Cannot save segmentation.")
+            self.print_to_statusbar("No image loaded. Cannot save segmentation.")
             return
     
-        if self.active_layer_name:
+        active_layer_name = self.segmentation_list_manager.active_layer_name
+
+        if active_layer_name:
             file_path, _ = QFileDialog.getSaveFileName(self, "Save Segmentation", "", "MetaImage Files (*.mha *.mhd)")
             if file_path:
+
                 # Get the active layer's segmentation
-                segmentation = self.segmentation_layers[self.active_layer_name].segmentation
+                segmentation = self.segmentation_list_manager.get_active_layer_data().segmentation 
 
-                # Expand 2D segmentation into 3D (single slice)
-                segmentation_3d = np.expand_dims(segmentation, axis=0)
-                segmentation_image = sitk.GetImageFromArray(segmentation_3d)
+                self.save_segmentation_layer(segmentation, file_path)
 
-                # Copy spatial metadata from the original DICOM image
-                segmentation_image.CopyInformation(self.dicom_image)
-
-                # Save the segmentation as .mha
-                sitk.WriteImage(segmentation_image, file_path)
                 self.print_status(f"Active layer segmentation saved to {file_path}")
         else:
-            self.print_status("No active layer to save.")
+            self.print_to_statusbar("No active layer to save.")
 
 
+    def save_state(self,data_dict, data_dir):
+        # Save segmentation layers as '.mha'
+        data_dict["segmentation_layers"] = {}
 
+        for layer_name, layer_data in self.segmentation_layers.items():
+            segmentation_path = os.path.join(data_dir, f"{layer_name}.mha")
+            self.save_segmentation_layer(layer_data.segmentation, segmentation_path)
+
+            # Add layer metadata to the workspace data
+            data_dict["segmentation_layers"][layer_name] = {
+                "file": f"{layer_name}.mha",
+                "visible": layer_data.visible,
+                "color": list(layer_data.color),
+                "alpha": layer_data.alpha,
+            }
+
+    def load_state(self, data_dict, data_dir, aux_data):
+        import json
+        import os
+
+        self.sitk_image = aux_data['base_image']
+
+        # Clear existing workspace
+        self.segmentation_layers.clear()
+        self.list_widget_for_segmentation_layers.clear()
+
+        # Load segmentation layers
+        for layer_name, layer_metadata in data_dict.get("segmentation_layers", {}).items():
+            seg_path = os.path.join(data_dir, layer_metadata["file"])
+            if os.path.exists(seg_path):
+                try:
+                    sitk_seg = sitk.ReadImage(seg_path)
+                    nparray_seg = sitk.GetArrayFromImage(sitk_seg)[0]
+
+                    layer_data = SegmentationLayer(
+                        segmentation=nparray_seg,
+                        visible=layer_metadata["visible"],
+                        color=tuple(layer_metadata["color"]),  # Convert to tuple
+                        alpha=layer_metadata["alpha"],
+                    )
+
+                    self.segmentation_layers[layer_name] = layer_data
+
+                    self.add_layer_widget_item(layer_name, layer_data)
+                    
+                except Exception as e:
+                    self.print_status(f"Failed to load segmentation layer {layer_name}: {e}")
+            else:
+                self.print_status(f"Segmentation file for layer {layer_name} not found.")
 
 

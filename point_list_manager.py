@@ -310,5 +310,38 @@ class PointListManager:
     def print_status(self, msg):
         self.get_mainwindow().status_bar.showMessage(msg)
 
+    def on_image_loaded(self, sitk_image):
+        pass
 
+    def save_state(self,data_dict, data_dir):
+        
+        data_dict["points"] = []
 
+        for point in self.points:
+            data_dict["points"].append({
+                "x": point.x,
+                "y": point.y,
+                "name": point.name,
+                "color": point.color,
+                "visible": point.visible,
+            })
+
+    def load_state(self, data_dict, data_dir, aux_data):
+        
+        self.sitk_image = aux_data['base_image']
+        
+        self.points = []
+
+        for point_data in data_dict.get("points", []):
+            try:
+                self.points.append(
+                    Point(
+                        x=point_data["x"],
+                        y=point_data["y"],
+                        name=point_data["name"],
+                        color=tuple(point_data["color"]),  # Convert to tuple
+                        visible=point_data["visible"],
+                    )
+                )
+            except KeyError as e:
+                self.print_status(f"Invalid point data: missing key {e}")

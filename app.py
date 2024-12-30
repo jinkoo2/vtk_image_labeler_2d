@@ -232,7 +232,7 @@ class MainWindow(QMainWindow):
         self.status_bar = self.statusBar()
         self.status_bar.showMessage("Ready")  # Initial message
 
-        self.dicom_image = None
+        self.sitk_image = None
 
     def create_menu(self):
         # Create a menu bar
@@ -264,10 +264,6 @@ class MainWindow(QMainWindow):
         save_workspace_action.triggered.connect(self.save_workspace)
         file_menu.addAction(save_workspace_action)
 
-        # Add Save Segmentation action
-        save_action = QAction("Save Active Segmentation", self)
-        save_action.triggered.connect(self.save_active_segmentation)
-        file_menu.addAction(save_action)
 
 
     def create_view_menu(self, view_menu):
@@ -307,9 +303,6 @@ class MainWindow(QMainWindow):
         save_workspace_action.triggered.connect(self.save_workspace)
         toolbar.addAction(save_workspace_action)
 
-        save_action = QAction("Save Active Segmentation", self)
-        save_action.triggered.connect(self.save_active_segmentation)
-        toolbar.addAction(save_action)
 
     def create_view_toolbar(self):
         # Create a toolbar
@@ -359,11 +352,12 @@ class MainWindow(QMainWindow):
             self.graphics_view.render_layers()
 
     def open_dicom(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Open DICOM File", "", "DICOM Files (*.dcm)")
+        init_folder = "W:/RadOnc/Planning/Physics QA/2024/1.Monthly QA/TrueBeamSH/2024_11/imaging"
+        file_path, _ = QFileDialog.getOpenFileName(self, "Open DICOM File", init_folder, "DICOM Files (*.dcm)")
         if file_path:
             # Load DICOM using SimpleITK
-            self.dicom_image = sitk.ReadImage(file_path)
-            image_array = sitk.GetArrayFromImage(self.dicom_image)[0]
+            self.sitk_image = sitk.ReadImage(file_path)
+            image_array = sitk.GetArrayFromImage(self.sitk_image)[0]
 
             self.set_default_window_level(image_array)
 
@@ -373,43 +367,11 @@ class MainWindow(QMainWindow):
 
             self.graphics_view.render_layers()
 
-            # let segmentation layer to handle image load
-            self.segmentation_list_manager.on_image_loaded(self.image_array)
+            # notify other managers
+            self.segmentation_list_manager.on_image_loaded(self.sitk_image)
+            self.point_list_manager.on_image_loaded(self.sitk_image)
 
    
-    def save_segmentation_layer(self, segmentation, file_path):
-
-        # Expand 2D segmentation into 3D (single slice)
-        segmentation_3d = np.expand_dims(segmentation, axis=0)
-        segmentation_image = sitk.GetImageFromArray(segmentation_3d)
-
-        # Copy spatial metadata from the original DICOM image
-        segmentation_image.CopyInformation(self.dicom_image)
-
-        # Save the segmentation as .mha
-        sitk.WriteImage(segmentation_image, file_path,useCompression=True)
-
-    def save_active_segmentation(self):
-        
-        if self.image_array is None:
-            self.print_to_statusbar("No image loaded. Cannot save segmentation.")
-            return
-    
-        active_layer_name = self.segmentation_list_manager.active_layer_name
-
-        if active_layer_name:
-            file_path, _ = QFileDialog.getSaveFileName(self, "Save Segmentation", "", "MetaImage Files (*.mha *.mhd)")
-            if file_path:
-
-                # Get the active layer's segmentation
-                segmentation = self.segmentation_list_manager.get_active_layer_data().segmentation 
-
-                self.save_segmentation_layer(segmentation, file_path)
-
-                self.print_status(f"Active layer segmentation saved to {file_path}")
-        else:
-            self.print_to_statusbar("No active layer to save.")
-
     def save_data(self):
         print('save data if dirty')
 
@@ -431,49 +393,27 @@ class MainWindow(QMainWindow):
             return 
         
         # data folder for the workspace
-        folder_path = workspace_json_path+".data"
-        if not os.path.exists(folder_path):
-            os.makedirs(folder_path)
+        data_dir = workspace_json_path+".data"
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir)
 
         # Create a metadata dictionary
         workspace_data = {
             "window_settings": {
                 "level": self.window_level_slider.get_value(),
                 "width": self.window_width_slider.get_value(),
-            },
-            "points": [],
-            "segmentation_layers": {},
+            }
         }
 
         # Save input image as '.mha'
-        input_image_path = os.path.join(folder_path, "input_image.mha")
-        input_image_3d = np.expand_dims(self.image_array, axis=0)
-        input_image_3d = sitk.GetImageFromArray(input_image_3d)
-        input_image_3d.CopyInformation(self.dicom_image)  # Copy spatial metadata
-        sitk.WriteImage(input_image_3d, input_image_path, useCompression=True)
+        input_image_path = os.path.join(data_dir, "input_image.mha")
+        sitk.WriteImage(self.sitk_image, input_image_path, useCompression=True)
 
-        # Save segmentation layers as '.mha'
-        for layer_name, layer_data in self.segmentation_list_manager.segmentation_layers.items():
-            segmentation_path = os.path.join(folder_path, f"{layer_name}.mha")
-            self.save_segmentation_layer(layer_data.segmentation, segmentation_path)
-            
-            # Add layer metadata to the workspace data
-            workspace_data["segmentation_layers"][layer_name] = {
-                "file": f"{layer_name}.mha",
-                "visible": layer_data.visible,
-                "color": list(layer_data.color),
-                "alpha": layer_data.alpha,
-            }
+        #save segmentation layers
+        self.segmentation_list_manager.save_state(workspace_data, data_dir)
 
         # Save points metadata
-        for point in self.point_list_manager.points:
-            workspace_data["points"].append({
-                "x": point.x,
-                "y": point.y,
-                "name": point.name,
-                "color": point.color,
-                "visible": point.visible,
-            })
+        self.point_list_manager.save_state(workspace_data, data_dir)
 
         # Save metadata as 'workspace.json'
         with open(workspace_json_path, "w") as f:
@@ -504,7 +444,8 @@ class MainWindow(QMainWindow):
         import os
 
         """Load a workspace from a folder."""
-        workspace_json_path, _ = QFileDialog.getOpenFileName(self, "Select Workspace File", "", "JSON Files (*.json)")
+        init_dir = "W:/RadOnc/Planning/Physics QA/2024/1.Monthly QA/TrueBeamSH/2024_11/imaging"
+        workspace_json_path, _ = QFileDialog.getOpenFileName(self, "Select Workspace File", init_dir, "JSON Files (*.json)")
         if not workspace_json_path:
            return
 
@@ -527,37 +468,22 @@ class MainWindow(QMainWindow):
 
         # Clear existing workspace
         self.image_array = None
-        self.dicom_image = None
+        self.sitk_image = None
         self.point_list_manager.points.clear()
 
         # Load input image
         input_image_path = os.path.join(data_path, "input_image.mha")
         if os.path.exists(input_image_path):
             try:
-                self.dicom_image = sitk.ReadImage(input_image_path)
-                self.image_array = sitk.GetArrayFromImage(self.dicom_image)[0]
+                self.sitk_image = sitk.ReadImage(input_image_path)
+                self.image_array = sitk.GetArrayFromImage(self.sitk_image)[0]
                 self.set_default_window_level(self.image_array)  # Call set_default_window_level
             except Exception as e:
                 self.print_status(f"Failed to load input image: {e}")
                 return
 
-        self.segmentation_list_manager.image_array = self.image_array
-        self.segmentation_list_manager.load_from_workspace_file(workspace_json_path)
-
-        # Load points
-        for point_data in workspace_data.get("points", []):
-            try:
-                self.point_list_manager.points.append(
-                    Point(
-                        x=point_data["x"],
-                        y=point_data["y"],
-                        name=point_data["name"],
-                        color=tuple(point_data["color"]),  # Convert to tuple
-                        visible=point_data["visible"],
-                    )
-                )
-            except KeyError as e:
-                self.print_status(f"Invalid point data: missing key {e}")
+        self.segmentation_list_manager.load_state(workspace_data, data_path, {'base_image': self.sitk_image})
+        self.point_list_manager.load_state(workspace_data, data_path, {'base_image': self.sitk_image})
 
         # Restore window settings
         window_settings = workspace_data.get("window_settings", {})
