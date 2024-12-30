@@ -1,0 +1,2896 @@
+# Start of app.py
+import sys
+import numpy as np
+import SimpleITK as sitk
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QGraphicsView, QGraphicsScene,
+    QFileDialog, QVBoxLayout, QSlider, QPushButton, QLabel, QWidget, QMenuBar, QAction, QToolBar, QDockWidget, QListWidget, QHBoxLayout, QPushButton, QCheckBox, QLineEdit
+)
+from PyQt5.QtCore import Qt, QEvent
+from PyQt5.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QIcon
+import cv2
+
+import os
+
+from segmentation_list_manager import SegmentationListManager
+from point_list_manager import PointListManager
+### helper functions
+import numpy as np
+
+from PyQt5.QtWidgets import QWidget, QHBoxLayout, QCheckBox, QLabel, QListWidgetItem, QColorDialog
+from labeled_slider import LabeledSlider
+
+
+class ImageWindowLevelRenderer:
+    def __init__(self) -> None:
+        pass
+
+    def apply_window_level(self, image_array, level, width):
+        """
+        Adjust the DICOM image brightness and contrast using window level and width.
+        :param image: NumPy array of the image.
+        :param level: Window level (center).
+        :param width: Window width.
+        :return: Window-leveled image as NumPy array.
+        """
+        min_intensity = level - (width / 2)
+        max_intensity = level + (width / 2)
+
+        # Clamp pixel values
+        adjusted = np.clip(image_array, min_intensity, max_intensity)
+
+        # Normalize to 0-255 for display
+        adjusted = ((adjusted - min_intensity) / (max_intensity - min_intensity) * 255).astype(np.uint8)
+        
+        return adjusted
+    
+    def render(self, image_array, level, width):
+        adjusted_image = self.apply_window_level(image_array, level, width)
+        return adjusted_image
+    
+class GraphicsView2D(QGraphicsView):
+    def __init__(self, parent_viewer, parent=None):
+        super().__init__(parent)
+        
+        self.parent_viewer = parent_viewer  # Reference to the DicomViewer instance
+
+        self.setMouseTracking(True)  # Enable mouse tracking
+        self.setInteractive(True) # Enable mouse interaction drgging
+        
+        self.zoom_factor = 1.0  # Initial zoom level
+        self.zoom_step = 0.1  # Amount of zoom per scroll
+        self.min_zoom = 0.5  # Minimum zoom factor
+        self.max_zoom = 5.0  # Maximum zoom factor
+
+        # point data
+        self.points = []  # List of Point objects
+        self.active_point_index = None  # Index of the active point
+        self.dragging_point = False  # State for dragging
+
+        # renderers
+        self.image_window_level_renderer = ImageWindowLevelRenderer()
+
+    def get_managers(self):
+        return self.parent_viewer.managers
+
+    def get_renderers(self):
+        return [manager.renderer for manager in self.get_managers()]
+
+    def get_image_array(self):
+        return self.parent_viewer.image_array
+
+    def point_in_image_boundary(self, x, y):
+        
+        if self.get_image_array() is None:
+            return False
+
+        if 0 <= x < self.get_image_array().shape[1] and 0 <= y < self.get_image_array().shape[0]:
+            return True
+        else:
+            return False
+
+    def wheelEvent(self, event):
+        # Check if the Left Control key is pressed
+        if QApplication.keyboardModifiers() == Qt.ControlModifier:
+            # Determine the scroll direction
+            if event.angleDelta().y() > 0:
+                self.zoom_in()
+            else:
+                self.zoom_out()
+
+    def print_status(self, msg):
+        self.parent_viewer.print_status(msg)
+
+    def zoom_in(self):
+        """Zoom in the view."""
+        if self.zoom_factor < self.max_zoom:
+            self.zoom_factor += self.zoom_step
+            self.scale(1 + self.zoom_step, 1 + self.zoom_step)
+            self.print_status(f"Zoom: {self.zoom_factor:.2f}x")
+
+    def zoom_out(self):
+        """Zoom out the view."""
+        if self.zoom_factor > self.min_zoom:
+            self.zoom_factor -= self.zoom_step
+            self.scale(1 - self.zoom_step, 1 - self.zoom_step)
+            self.print_status(f"Zoom: {self.zoom_factor:.2f}x")
+
+    def zoom_reset(self):
+        """Reset zoom to the default level."""
+        self.resetTransform()
+        self.zoom_factor = 1.0
+        self.print_status(f"Zoom: {self.zoom_factor:.2f}x")
+
+
+    def render_layers(self, brush_x=None, brush_y=None):
+        """Render the image and layers, including a brush indicator if provided."""
+        if self.get_image_array() is None:
+            return
+
+        # Apply window-level adjustments to the base image
+        level = self.parent_viewer.window_level_slider.value()
+        width = self.parent_viewer.window_width_slider.value()
+        image_uchar = self.image_window_level_renderer.render(self.get_image_array(), level, width)
+
+        # conver to rgb image
+        overlay_rgb = cv2.cvtColor(image_uchar, cv2.COLOR_GRAY2RGB)
+    
+        # Render Segmentation Layers
+        for renderer in self.get_renderers():
+            renderer.render_rgb(overlay_rgb, brush_x, brush_y)
+        
+        # Convert the final overlay image to QImage and display it
+        height, width, channel = overlay_rgb.shape
+        qimage = QImage(overlay_rgb.data, width, height, 3 * width, QImage.Format_RGB888)
+        pixmap = QPixmap.fromImage(qimage)
+        self.scene().clear()
+        self.scene().addPixmap(pixmap)
+
+    def update(self):
+        self.render_layers()
+    
+    def mousePressEvent(self, event):
+        if self.get_image_array() is None:
+            return 
+
+        for renderer in self.get_renderers():
+            renderer.mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        image_array = self.get_image_array()
+
+        if image_array is None:
+            return
+
+        # Map mouse position to the scene
+        scene_pos = self.mapToScene(event.pos())
+        image_x = int(scene_pos.x())
+        image_y = int(scene_pos.y())
+
+        # Ensure coordinates are within the image bounds
+        if self.point_in_image_boundary(image_x,image_y):
+
+            # Render layers with the brush indicator
+            self.render_layers(image_x, image_y)
+
+            # Update the status bar with the current mouse position and pixel value
+            pixel_value = image_array[image_y, image_x]
+            self.parent_viewer.status_bar.showMessage(f"Mouse: ({image_x}, {image_y}) | Pixel Value: {pixel_value}")
+
+        for renderer in self.get_renderers():
+            renderer.mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self.get_image_array() is None:
+            return 
+        
+        for renderer in self.get_renderers():
+            renderer.mouseReleaseEvent(event)
+    
+    
+    def add_ruler(self):
+        from PyQt5.QtCore import QPointF
+        from ruler_widget import RulerWidget
+        
+        """Add a ruler widget at the center of the scene."""
+        if self.scene():
+            scene_center = self.sceneRect().center()
+            start = QPointF(scene_center.x() - 50, scene_center.y())
+            end = QPointF(scene_center.x() + 50, scene_center.y())
+            self.ruler_widget = RulerWidget(start, end, self.scene())
+            self.scene().addItem(self.ruler_widget)
+
+    def toggle_ruler(self):
+        """Toggle ruler visibility."""
+        if hasattr(self, "ruler_widget"):
+            self.ruler_widget.setVisible(not self.ruler_widget.isVisible())
+            self.ruler_widget.start_handle.setVisible(self.ruler_widget.isVisible())
+            self.ruler_widget.end_handle.setVisible(self.ruler_widget.isVisible())
+
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+
+        self.image_array = None
+
+        self.init_ui()
+
+        self.managers = []
+
+        # segmenation list manager
+        self.segmentation_list_manager = SegmentationListManager(self)
+        self.segmentation_list_manager.init_ui()
+        self.managers.append(self.segmentation_list_manager)
+
+        # point list manager
+        self.point_list_manager = PointListManager(self)
+        self.point_list_manager.init_ui()
+        self.managers.append(self.point_list_manager)
+            
+    def init_ui(self):
+        self.setWindowTitle("Image Labeler 2D")
+        self.setGeometry(100, 100, 1024, 786)
+
+        self.main_widget = QWidget()
+        self.layout = QVBoxLayout()
+
+        # Graphics View
+        self.graphics_view = GraphicsView2D(self, self)
+        self.graphics_scene = QGraphicsScene(self)
+        self.graphics_view.setScene(self.graphics_scene)
+        self.layout.addWidget(self.graphics_view)
+
+        # Set the layout
+        self.main_widget.setLayout(self.layout)
+        self.setCentralWidget(self.main_widget)
+
+        # Add the File menu
+        self.create_menu()
+      
+        self.create_file_toolbar()
+        self.create_view_toolbar()
+
+        self.graphics_view.add_ruler()  # Add a ruler initially
+
+        # Add status bar
+        self.status_bar = self.statusBar()
+        self.status_bar.showMessage("Ready")  # Initial message
+
+        self.sitk_image = None
+
+    def create_menu(self):
+        # Create a menu bar
+        menubar = self.menuBar()
+
+        # Add the File menu
+        file_menu = menubar.addMenu("File")
+        self.create_file_menu(file_menu)
+
+        # Add View menu
+        view_menu = menubar.addMenu("View")
+        self.create_view_menu(view_menu)
+
+
+    def create_file_menu(self, file_menu):
+        
+        # Add Open DICOM action
+        open_image_action = QAction("Open Image", self)
+        open_image_action.triggered.connect(self.open_dicom)
+        file_menu.addAction(open_image_action)
+
+        # Add Save Workspace action
+        open_workspace_action = QAction("Open Workspace", self)
+        open_workspace_action.triggered.connect(self.load_workspace)
+        file_menu.addAction(open_workspace_action)
+
+        # Add Save Workspace action
+        save_workspace_action = QAction("Save Workspace", self)
+        save_workspace_action.triggered.connect(self.save_workspace)
+        file_menu.addAction(save_workspace_action)
+
+
+
+    def create_view_menu(self, view_menu):
+        
+        # Zoom In
+        zoom_in_action = QAction("Zoom In", self)
+        zoom_in_action.triggered.connect(self.zoom_in_clicked)
+        view_menu.addAction(zoom_in_action)
+
+        # Zoom Out
+        zoom_out_action = QAction("Zoom Out", self)
+        zoom_out_action.triggered.connect(self.zoom_out_clicked)
+        view_menu.addAction(zoom_out_action)
+
+        # Zoom Reset
+        zoom_reset_action = QAction("Zoom Reset", self)
+        zoom_reset_action.triggered.connect(self.zoom_reset_clicked)
+        view_menu.addAction(zoom_reset_action)
+        
+    def create_file_toolbar(self):
+        # Create a toolbar
+        toolbar = QToolBar("File Toolbar", self)
+        self.addToolBar(Qt.TopToolBarArea, toolbar)
+
+        # Add actions to the toolbar
+        # Add Open DICOM action
+        open_action = QAction("Open Image", self)
+        open_action.triggered.connect(self.open_dicom)
+        toolbar.addAction(open_action)
+
+        # Add Save Workspace action
+        open_workspace_action = QAction("Open Workspace", self)
+        open_workspace_action.triggered.connect(self.load_workspace)
+        toolbar.addAction(open_workspace_action)
+
+        save_workspace_action = QAction("Save Workspace", self)
+        save_workspace_action.triggered.connect(self.save_workspace)
+        toolbar.addAction(save_workspace_action)
+
+
+    def create_view_toolbar(self):
+        # Create a toolbar
+        toolbar = QToolBar("View Toolbar", self)
+        self.addToolBar(Qt.TopToolBarArea, toolbar)
+
+        # window_level_slider - level slider
+        self.window_level_slider = LabeledSlider("Window Level:")
+        self.window_level_slider.slider.valueChanged.connect(self.update_window_level)
+        toolbar.addWidget(self.window_level_slider)
+
+        # window_level_slider - width slider
+        self.window_width_slider = LabeledSlider("Window Width:")
+        self.window_width_slider.slider.valueChanged.connect(self.update_window_level)
+        toolbar.addWidget(self.window_width_slider)
+        
+        # zoom in action
+        zoom_in_action = QAction("Zoom In", self)
+        zoom_in_action.triggered.connect(self.zoom_in_clicked)
+        toolbar.addAction(zoom_in_action)    
+        
+         # zoom in action
+        zoom_out_action = QAction("Zoom Out", self)
+        zoom_out_action.triggered.connect(self.zoom_out_clicked)
+        toolbar.addAction(zoom_out_action)    
+
+        # zoom reset button
+        zoom_reset_action = QAction("Zoom Reset", self)
+        zoom_reset_action.triggered.connect(self.zoom_reset_clicked)
+        toolbar.addAction(zoom_reset_action)        
+
+        # Add ruler toggle action
+        toggle_ruler_action = QAction("Toggle Ruler", self)
+        toggle_ruler_action.triggered.connect(self.graphics_view.toggle_ruler)
+        toolbar.addAction(toggle_ruler_action)
+
+    def zoom_in_clicked(self):
+        if self.image_array is not None:
+            self.graphics_view.zoom_in()
+    
+    def zoom_out_clicked(self):
+        if self.image_array is not None:
+            self.graphics_view.zoom_out()
+
+    def zoom_reset_clicked(self):
+        if self.image_array is not None:
+            self.graphics_view.zoom_reset()
+
+    def update_window_level(self):
+        
+        if self.image_array is not None:
+            self.graphics_view.render_layers()
+
+    def open_dicom(self):
+        init_folder = "W:/RadOnc/Planning/Physics QA/2024/1.Monthly QA/TrueBeamSH/2024_11/imaging"
+        file_path, _ = QFileDialog.getOpenFileName(self, "Open DICOM File", init_folder, "DICOM Files (*.dcm)")
+        if file_path:
+            # Load DICOM using SimpleITK
+            self.sitk_image = sitk.ReadImage(file_path)
+            image_array = sitk.GetArrayFromImage(self.sitk_image)[0]
+
+            self.set_default_window_level(image_array)
+
+            self.image_array = image_array
+           
+            self.update_window_level()
+
+            self.graphics_view.render_layers()
+
+            # notify other managers
+            self.segmentation_list_manager.on_image_loaded(self.sitk_image)
+            self.point_list_manager.on_image_loaded(self.sitk_image)
+
+   
+    def save_data(self):
+        print('save data if dirty')
+
+    def print_status(self, msg):
+        self.status_bar.showMessage(msg)
+
+    def save_workspace(self):
+        import json
+        import os
+
+        """Save the current workspace to a folder."""
+        if self.image_array is None:
+            self.print_status("No image loaded. Cannot save workspace.")
+            return
+
+        # workspace json file
+        workspace_json_path, _ = QFileDialog.getSaveFileName(self, "Save Workspace", "", "Json (*.json)")
+        if not workspace_json_path:
+            return 
+        
+        # data folder for the workspace
+        data_dir = workspace_json_path+".data"
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir)
+
+        # Create a metadata dictionary
+        workspace_data = {
+            "window_settings": {
+                "level": self.window_level_slider.get_value(),
+                "width": self.window_width_slider.get_value(),
+            }
+        }
+
+        # Save input image as '.mha'
+        input_image_path = os.path.join(data_dir, "input_image.mha")
+        sitk.WriteImage(self.sitk_image, input_image_path, useCompression=True)
+
+        #save segmentation layers
+        self.segmentation_list_manager.save_state(workspace_data, data_dir)
+
+        # Save points metadata
+        self.point_list_manager.save_state(workspace_data, data_dir)
+
+        # Save metadata as 'workspace.json'
+        with open(workspace_json_path, "w") as f:
+            json.dump(workspace_data, f, indent=4)
+
+        self.print_status(f"Workspace saved to {workspace_json_path}.")
+
+    def set_default_window_level(self, image_array):
+        # Set default window-level values
+        min = np.min(image_array)
+        max = np.max(image_array)
+
+        default_level = int((max + min) / 2)
+        default_width = int(max - min)
+
+        self.window_level_slider.setMinimum(min)
+        self.window_level_slider.setMaximum(max)
+        self.window_level_slider.setTickInterval(int(default_width/200))
+        self.window_level_slider.setValue(default_level)
+            
+        self.window_width_slider.setMinimum(1)
+        self.window_width_slider.setMaximum(default_width)
+        self.window_width_slider.setTickInterval(int(default_width/200))
+        self.window_width_slider.setValue(default_width)
+
+    def load_workspace(self):
+        import json
+        import os
+
+        """Load a workspace from a folder."""
+        init_dir = "W:/RadOnc/Planning/Physics QA/2024/1.Monthly QA/TrueBeamSH/2024_11/imaging"
+        workspace_json_path, _ = QFileDialog.getOpenFileName(self, "Select Workspace File", init_dir, "JSON Files (*.json)")
+        if not workspace_json_path:
+           return
+
+        # Load metadata from 'workspace.json'
+        if not os.path.exists(workspace_json_path):
+            self.print_status("Workspace JSON file not found.")
+            return
+
+        data_path = workspace_json_path+".data"
+        if not os.path.exists(data_path):
+            self.print_status("Workspace data folder not found.")
+            return
+
+        try:
+            with open(workspace_json_path, "r") as f:
+                workspace_data = json.load(f)
+        except json.JSONDecodeError as e:
+            self.print_status(f"Failed to parse workspace.json: {e}")
+            return
+
+        # Clear existing workspace
+        self.image_array = None
+        self.sitk_image = None
+        self.point_list_manager.points.clear()
+
+        # Load input image
+        input_image_path = os.path.join(data_path, "input_image.mha")
+        if os.path.exists(input_image_path):
+            try:
+                self.sitk_image = sitk.ReadImage(input_image_path)
+                self.image_array = sitk.GetArrayFromImage(self.sitk_image)[0]
+                self.set_default_window_level(self.image_array)  # Call set_default_window_level
+            except Exception as e:
+                self.print_status(f"Failed to load input image: {e}")
+                return
+
+        self.segmentation_list_manager.load_state(workspace_data, data_path, {'base_image': self.sitk_image})
+        self.point_list_manager.load_state(workspace_data, data_path, {'base_image': self.sitk_image})
+
+        # Restore window settings
+        window_settings = workspace_data.get("window_settings", {})
+        self.window_level_slider.set_value(window_settings.get("level", 0))
+        self.window_width_slider.set_value(window_settings.get("width", 1))
+
+        # Render the workspace
+        if self.image_array is not None:
+            self.graphics_view.render_layers()
+
+        self.print_status(f"Workspace loaded from {data_path}.")
+
+
+class MyApplication(QApplication):
+    def notify(self, receiver, event):
+        
+        #if event.type() == QEvent.FocusOut:
+        #    print(f"Focus out: {receiver}")
+        
+        return super().notify(receiver, event)
+    
+
+if __name__ == "__main__":
+    app = MyApplication(sys.argv)
+    viewer = MainWindow()
+    viewer.show()
+    sys.exit(app.exec_())
+
+
+# Start of color_rotator.py
+class ColorRotator:
+    def __init__(self):
+        # Define a list of 10 preset RGB colors
+        self.colors = [
+            (255, 0, 0),     # Red
+            (0, 255, 0),     # Green
+            (0, 0, 255),     # Blue
+            (255, 255, 0),   # Yellow
+            (0, 255, 255),   # Cyan
+            (255, 0, 255),   # Magenta
+            (170, 255, 0),   # 
+            (255, 165, 0),   # Orange
+            (170, 255, 9),   # Indigo
+            (0, 128, 0)      # Dark Green
+        ]
+        self.index = 0  # Track the current position in the rotation
+
+    def next(self):
+        """Return the next color in the rotation."""
+        color = self.colors[self.index]
+        self.index = (self.index + 1) % len(self.colors)  # Move to the next color, wrap around if needed
+        return color
+
+
+# Start of combine2one.py
+import os
+from pathlib import Path
+
+# Specify the directory containing the .py files
+directory = ""
+
+# File to save the combined content
+output_file = "all.txt"
+
+# Create or overwrite the output file
+with open(output_file, "w", encoding="utf-8") as outfile:
+    for file in Path(directory).glob("*.py"):  # Find all .py files in the directory
+        with open(file, "r", encoding="utf-8") as infile:
+            outfile.write(f"# Start of {file.name}\n")  # Optionally add file header
+            outfile.write(infile.read())  # Write the file's content
+            outfile.write("\n\n")  # Add a blank line between files
+
+print(f"Combined content saved to {output_file}")
+
+
+# Start of deleteme.py
+import sys
+import numpy as np
+import SimpleITK as sitk
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QGraphicsView, QGraphicsScene,
+    QFileDialog, QVBoxLayout, QSlider, QPushButton, QLabel, QWidget, QMenuBar, QAction, QToolBar, QDockWidget, QListWidget, QHBoxLayout, QPushButton, QCheckBox, QLineEdit
+)
+from PyQt5.QtCore import Qt, QEvent
+from PyQt5.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QIcon
+import cv2
+
+import os
+
+from segmentation_manager import SegmentationManager
+sm = SegmentationManager()
+sm.say_hello()
+
+# Get the current directory of the script
+current_dir = os.path.dirname(__file__)
+
+# Construct paths to the icons
+brush_icon_path = os.path.join(current_dir, "icons", "brush.png")
+eraser_icon_path = os.path.join(current_dir, "icons", "eraser.png")
+reset_zoom_icon_path = os.path.join(current_dir, "icons", "reset_zoom.png")
+
+
+### helper functions
+import numpy as np
+
+class ColorRotator:
+    def __init__(self):
+        # Define a list of 10 preset RGB colors
+        self.colors = [
+            (255, 0, 0),     # Red
+            (0, 255, 0),     # Green
+            (0, 0, 255),     # Blue
+            (255, 255, 0),   # Yellow
+            (0, 255, 255),   # Cyan
+            (255, 0, 255),   # Magenta
+            (170, 255, 0),   # 
+            (255, 165, 0),   # Orange
+            (170, 255, 9),   # Indigo
+            (0, 128, 0)      # Dark Green
+        ]
+        self.index = 0  # Track the current position in the rotation
+
+    def next(self):
+        """Return the next color in the rotation."""
+        color = self.colors[self.index]
+        self.index = (self.index + 1) % len(self.colors)  # Move to the next color, wrap around if needed
+        return color
+
+
+class SegmentationLayer:
+    def __init__(self, segmentation, visible=True, color=np.array([255, 255, 128]), alpha=0.5) -> None:
+        self.segmentation = segmentation
+        self.visible = visible
+        self.color = color
+        self.alpha = alpha
+
+class Point:
+    def __init__(self, x: int, y: int, name:str, color: tuple = (255, 0, 0), visible: bool = True):
+        self.x = x
+        self.y = y
+        self.name = name
+        self.color = color
+        self.visible = visible
+
+class PointItemWidget(QWidget):
+    def __init__(self, point, parent_manager):
+        super().__init__()
+        self.point = point
+        self.parent_manager = parent_manager
+
+        # Layout
+        self.layout = QHBoxLayout()
+        self.layout.setContentsMargins(0, 0, 0, 0)
+
+        # Visibility checkbox
+        self.checkbox = QCheckBox()
+        self.checkbox.setChecked(self.point.visible)
+        self.checkbox.stateChanged.connect(self.toggle_visibility)
+        self.layout.addWidget(self.checkbox)
+
+        # Color patch
+        self.color_patch = QLabel()
+        self.color_patch.setFixedSize(16, 16)
+        self.color_patch.setStyleSheet(f"background-color: {self.get_color_hex()}; border: 1px solid black;")
+        self.color_patch.setCursor(Qt.PointingHandCursor)
+        self.color_patch.mousePressEvent = self.change_color
+        self.layout.addWidget(self.color_patch)
+
+        # Editable name
+        self.name_label = QLabel(self.point.name)
+        self.name_label.setCursor(Qt.PointingHandCursor)
+        self.name_label.mouseDoubleClickEvent = self.activate_editor
+        self.layout.addWidget(self.name_label)
+
+        self.name_editor = QLineEdit(self.point.name)
+        self.name_editor.setVisible(False)
+        self.name_editor.returnPressed.connect(self.deactivate_editor)
+        self.name_editor.editingFinished.connect(self.deactivate_editor)
+        self.layout.addWidget(self.name_editor)
+
+        self.setLayout(self.layout)
+
+    def toggle_visibility(self, state):
+        self.point.visible = state == Qt.Checked
+        self.parent_manager.update_points()
+
+    def change_color(self, event):
+        color = QColorDialog.getColor()
+        if color.isValid():
+            self.point.color = (color.red(), color.green(), color.blue())
+            self.color_patch.setStyleSheet(f"background-color: {color.name()}; border: 1px solid black;")
+            self.parent_manager.update_points()
+
+    def activate_editor(self, event):
+        self.name_label.hide()
+        self.name_editor.show()
+        self.name_editor.setFocus()
+        self.name_editor.selectAll()
+
+    def deactivate_editor(self):
+        new_name = self.name_editor.text().strip()
+        if new_name and self.parent_manager.is_name_unique(new_name):
+            self.point.name = new_name
+            self.name_label.setText(new_name)
+        else:
+            self.parent_manager.parent_viewer.print_status("Name must be unique or valid!")
+        self.name_label.show()
+        self.name_editor.hide()
+
+    def get_color_hex(self):
+        r, g, b = self.point.color
+        return f"rgb({r}, {g}, {b})"
+
+
+class ImageWindowLevelRenderer:
+    def __init__(self) -> None:
+        pass
+
+    def apply_window_level(self, image_array, level, width):
+        """
+        Adjust the DICOM image brightness and contrast using window level and width.
+        :param image: NumPy array of the image.
+        :param level: Window level (center).
+        :param width: Window width.
+        :return: Window-leveled image as NumPy array.
+        """
+        min_intensity = level - (width / 2)
+        max_intensity = level + (width / 2)
+
+        # Clamp pixel values
+        adjusted = np.clip(image_array, min_intensity, max_intensity)
+
+        # Normalize to 0-255 for display
+        adjusted = ((adjusted - min_intensity) / (max_intensity - min_intensity) * 255).astype(np.uint8)
+        
+        return adjusted
+    
+    def render(self, image_array, level, width):
+        adjusted_image = self.apply_window_level(image_array, level, width)
+        return adjusted_image
+    
+class PointListRenderer:
+    def __init__(self) -> None:
+        self.points = []  # List of Point objects
+        self.active_point_index = None  # Index of the active point
+        self.dragging_point = False  # State for dragging
+        self.point_edit_active = False
+
+    def render(self, overlay_rgb):
+        # Render each layer if it is visible
+        for i, point in enumerate(self.points):
+            if point.visible:
+                color = point.color
+                x, y = point.x, point.y
+                cv2.circle(overlay_rgb, (x, y), radius=5, color=color, thickness=-1)
+                if i == self.active_point_index:
+                    # Draw a larger circle around the active point
+                    cv2.circle(overlay_rgb, (x, y), radius=8, color=(255, 255, 255), thickness=1)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            if self.point_edit_active:
+                # Handle point editing
+                scene_pos = self.mapToScene(event.pos())
+                x, y = int(scene_pos.x()), int(scene_pos.y())
+                for i, point in enumerate(self.points):
+                    if (point.x - x) ** 2 + (point.y - y) ** 2 <= 5 ** 2:  # Check proximity
+                        self.active_point_index = i
+                        self.dragging_point = True
+                        self.parent_viewer.update_point_manager()
+                        return
+    
+    def mouseMoveEvent(self, event):
+        if self.point_edit_active and self.dragging_point and self.active_point_index is not None:
+            # Move the active point
+            scene_pos = self.mapToScene(event.pos())
+            x, y = int(scene_pos.x()), int(scene_pos.y())
+            self.points[self.active_point_index].x = x
+            self.points[self.active_point_index].y = y
+            self.parent_viewer.update_point_manager()
+            self.render_layers()
+
+    def mouseReleaseEvent(self, event):
+        if self.point_edit_active and event.button() == Qt.LeftButton:
+            self.dragging_point = False
+
+class PointManager(QWidget):
+    def __init__(self, parent_viewer):
+        super().__init__()
+        self.parent_viewer = parent_viewer
+        self.layout = QVBoxLayout()
+
+        # List of points
+        self.point_list = QListWidget()
+        self.point_list.currentItemChanged.connect(self.on_point_selected)
+        self.layout.addWidget(self.point_list)
+
+        # Add/Remove buttons
+        button_layout = QHBoxLayout()
+        add_point_button = QPushButton("Add Point")
+        add_point_button.clicked.connect(self.add_point)
+        remove_point_button = QPushButton("Remove Point")
+        remove_point_button.clicked.connect(self.remove_point)
+        button_layout.addWidget(add_point_button)
+        button_layout.addWidget(remove_point_button)
+        self.layout.addLayout(button_layout)
+
+        self.setLayout(self.layout)
+
+    def add_point(self):
+        """Add a new point with a unique name, placing it at the center of the viewport."""
+        name = self.generate_unique_name()
+        
+        # Get the center of the viewport in scene coordinates
+        viewport_center = self.parent_viewer.graphics_view.mapToScene(
+            self.parent_viewer.graphics_view.viewport().rect().center()
+        )
+        x, y = int(viewport_center.x()), int(viewport_center.y())
+
+        # Create the new point at the center of the viewport
+        new_point = Point(x, y, name)
+        self.parent_viewer.graphics_view.pointlist_renderer.points.append(new_point)
+        self.update_point_list()
+
+        # Update the graphics view to render the new point
+        self.parent_viewer.graphics_view.render_layers()
+
+
+    def remove_point(self):
+        """Remove the selected point."""
+        current_row = self.point_list.currentRow()
+        if current_row != -1:
+            del self.parent_viewer.graphics_view.points[current_row]
+            self.parent_viewer.graphics_view.active_point_index = None
+            self.update_point_list()
+
+    def on_point_selected(self, current, previous):
+        """Set the selected point as active."""
+        if current:
+            index = self.point_list.row(current)
+            self.parent_viewer.graphics_view.active_point_index = index
+
+    def update_point_list(self):
+        """Update the point list."""
+        self.point_list.clear()
+        for point in self.parent_viewer.graphics_view.pointlist_renderer.points:
+            item = QListWidgetItem(self.point_list)
+            item_widget = PointItemWidget(point, self)
+            item.setSizeHint(item_widget.sizeHint())
+            self.point_list.addItem(item)
+            self.point_list.setItemWidget(item, item_widget)
+
+    def generate_unique_name(self, base_name="Point"):
+        """Generate a unique name for a new point."""
+        index = 1
+        while any(p.name == f"{base_name} {index}" for p in self.parent_viewer.graphics_view.points):
+            index += 1
+        return f"{base_name} {index}"
+
+    def is_name_unique(self, name):
+        """Check if a name is unique."""
+        return not any(p.name == name for p in self.parent_viewer.graphics_view.points)
+
+    def update_points(self):
+        """Re-render points in the graphics view."""
+        self.parent_viewer.graphics_view.render_layers()
+
+
+class SegmentationLayerRenderer():
+    def __init__(self, layers) -> None:
+        self.layers = layers
+
+    def render(self, overlay_rgb):
+        # Render each layer if it is visible
+        for layer_name, layer_data in self.layers.items():
+            segmentation = layer_data.segmentation
+            visibility = layer_data.visible
+            color = layer_data.color
+            alpha = layer_data.alpha
+            if segmentation is not None and visibility:
+                mask = segmentation.astype(bool)
+                color_array = np.array(color, dtype=np.float32)
+                overlay_rgb[mask] = (1 - alpha) * overlay_rgb[mask] + alpha * color_array
+        return overlay_rgb
+    
+class CirclePaintBrush:
+    def __init__(self, radius, color, line_thickness) -> None:
+        self.radius = radius
+        self.color = color
+        self.line_thickness = line_thickness
+
+class PaintBrushRenderer:
+    def __init__(self, paintbrush) -> None:
+        self.paintbrush = paintbrush
+
+    def paint_on_mask(self, segmentation, x, y):
+        color = 1
+        cv2.circle(segmentation, (x, y), self.paintbrush.radius, color, -1) # line_thickness of -1 if to fill the mask
+
+    def erase_on_mask(self, segmentation, x, y):
+        color = 0
+        cv2.circle(segmentation, (x, y), self.paintbrush.radius, color, -1) # line_thickness of -1 if to fill the mask
+
+    def render(self, overlay_rgb, brush_x, brush_y):
+        cv2.circle(overlay_rgb, (brush_x, brush_y), self.paintbrush.radius, self.paintbrush.color, self.paintbrush.line_thickness)
+    
+class GraphicsView2D(QGraphicsView):
+    def __init__(self, parent_viewer, parent=None):
+        super().__init__(parent)
+        
+        self.parent_viewer = parent_viewer  # Reference to the DicomViewer instance
+
+        self.setMouseTracking(True)  # Enable mouse tracking
+        
+        self.paintbrush = CirclePaintBrush(radius=10, color= (0,255,0), line_thickness= 1)
+        
+        self.zoom_factor = 1.0  # Initial zoom level
+        self.zoom_step = 0.1  # Amount of zoom per scroll
+        self.min_zoom = 0.5  # Minimum zoom factor
+        self.max_zoom = 5.0  # Maximum zoom factor
+
+        # point data
+        self.points = []  # List of Point objects
+        self.active_point_index = None  # Index of the active point
+        self.dragging_point = False  # State for dragging
+
+        # renderers
+        self.segmentation_layer_renderer = SegmentationLayerRenderer(parent_viewer.segmentation_layers)
+        self.image_window_level_renderer = ImageWindowLevelRenderer()
+        self.paintbrush_renderer = PaintBrushRenderer(self.paintbrush)
+        self.pointlist_renderer = PointListRenderer()  
+
+    def get_image_array(self):
+        return self.parent_viewer.image_array
+
+    def point_in_image_boundary(self, x, y):
+        
+        if self.get_image_array() is None:
+            return False
+
+        if 0 <= x < self.get_image_array().shape[1] and 0 <= y < self.get_image_array().shape[0]:
+            return True
+        else:
+            return False
+
+    def wheelEvent(self, event):
+        # Check if the Left Control key is pressed
+        if QApplication.keyboardModifiers() == Qt.ControlModifier:
+            # Determine the scroll direction
+            if event.angleDelta().y() > 0:
+                self.zoom_in()
+            else:
+                self.zoom_out()
+
+    def print_status(self, msg):
+        self.parent_viewer.print_status(msg)
+
+    def zoom_in(self):
+        """Zoom in the view."""
+        if self.zoom_factor < self.max_zoom:
+            self.zoom_factor += self.zoom_step
+            self.scale(1 + self.zoom_step, 1 + self.zoom_step)
+            self.print_status(f"Zoom: {self.zoom_factor:.2f}x")
+
+    def zoom_out(self):
+        """Zoom out the view."""
+        if self.zoom_factor > self.min_zoom:
+            self.zoom_factor -= self.zoom_step
+            self.scale(1 - self.zoom_step, 1 - self.zoom_step)
+            self.print_status(f"Zoom: {self.zoom_factor:.2f}x")
+
+    def zoom_reset(self):
+        """Reset zoom to the default level."""
+        self.resetTransform()
+        self.zoom_factor = 1.0
+        self.print_status(f"Zoom: {self.zoom_factor:.2f}x")
+
+    def mousePressEvent(self, event):
+        if self.get_image_array() is None:
+            return 
+
+        if event.button() == Qt.LeftButton:
+            if self.parent_viewer.brush_active:
+                self.paint_on_active_layer(event)
+        
+        self.pointlist_renderer.mouseMoveEvent(event)
+
+    def mouseMoveEvent(self, event):
+        image_array = self.get_image_array()
+
+        if image_array is None:
+            return
+
+        # Map mouse position to the scene
+        scene_pos = self.mapToScene(event.pos())
+        x = int(scene_pos.x())
+        y = int(scene_pos.y())
+
+        # Ensure coordinates are within the image bounds
+        if self.point_in_image_boundary(x,y):
+            # If the left mouse button is pressed, draw on the active layer
+            if event.buttons() & Qt.LeftButton and (self.parent_viewer.brush_active or self.parent_viewer.erase_active):
+                self.paint_on_active_layer(event)
+
+            # Render layers with the brush indicator
+            if self.parent_viewer.brush_active or self.parent_viewer.erase_active:
+                self.render_layers(brush_x=x, brush_y=y)
+            else:
+                self.render_layers(brush_x=None, brush_y=None)
+
+            # Update the status bar with the current mouse position and pixel value
+            pixel_value = image_array[y, x]
+            self.parent_viewer.status_bar.showMessage(f"Mouse: ({x}, {y}) | Pixel Value: {pixel_value}")
+
+        self.pointlist_renderer.mouseMoveEvent(event)
+
+    def paint_on_active_layer(self, event):
+        layer_data = self.parent_viewer.get_active_layer_data()
+
+        # Ensure we have a valid active layer
+        if not layer_data:
+            return
+
+        # Get the active segmentation mask
+        segmentation = layer_data.segmentation
+
+        # Map the mouse position to the scene
+        scene_pos = self.mapToScene(event.pos())
+        x = int(scene_pos.x())
+        y = int(scene_pos.y())
+
+        # Ensure the coordinates are within the image bounds
+        if self.point_in_image_boundary(x, y):
+            
+            #make sure the brush radius is up to date.
+            self.paintbrush.radius = self.parent_viewer.brush_size_slider.value()
+
+            # paint/erase
+            if self.parent_viewer.brush_active:
+                self.paintbrush_renderer.paint_on_mask(segmentation, x, y)
+            elif self.parent_viewer.erase_active:
+                self.paintbrush_renderer.erase_on_mask(segmentation, x, y)
+                
+            self.render_layers()
+
+    def render_layers(self, brush_x=None, brush_y=None):
+        """Render the image and layers, including a brush indicator if provided."""
+        if self.get_image_array() is None:
+            return
+
+        # Apply window-level adjustments to the base image
+        level = self.parent_viewer.window_level_slider.value()
+        width = self.parent_viewer.window_width_slider.value()
+        image_uchar = self.image_window_level_renderer.render(self.get_image_array(), level, width)
+
+        # conver to rgb image
+        overlay_rgb = cv2.cvtColor(image_uchar, cv2.COLOR_GRAY2RGB)
+    
+        # Render Segmentation Layers
+        self.segmentation_layer_renderer.render(overlay_rgb)
+
+        # Draw the green brush indicator if coordinates are provided
+        if brush_x is not None and brush_y is not None:
+            self.paintbrush.radius = self.parent_viewer.brush_size_slider.value()
+            self.paintbrush_renderer.render(overlay_rgb, brush_x, brush_y)
+
+        self.pointlist_renderer.render(overlay_rgb)
+
+        # Convert the final overlay image to QImage and display it
+        height, width, channel = overlay_rgb.shape
+        qimage = QImage(overlay_rgb.data, width, height, 3 * width, QImage.Format_RGB888)
+        pixmap = QPixmap.fromImage(qimage)
+        self.scene().clear()
+        self.scene().addPixmap(pixmap)
+
+    def update(self):
+        self.render_layers()
+        
+    def mouseReleaseEvent(self, event):
+        if self.get_image_array() is None:
+            return 
+        
+        self.pointlist_renderer.mouseReleaseEvent(event)
+
+from PyQt5.QtWidgets import QWidget, QHBoxLayout, QCheckBox, QLabel, QListWidgetItem, QColorDialog
+
+
+class CustomLineEdit(QLineEdit):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.focus_out_callback = None  # Placeholder for the callback
+
+    def focusOutEvent(self, event):
+        if self.focus_out_callback:
+            self.focus_out_callback(event)  # Call the assigned function
+        super().focusOutEvent(event)  # Ensure default behavior
+
+class LayerItemWidget(QWidget):
+    def __init__(self, layer_name, layer_data, parent_viewer):
+        super().__init__()
+        self.parent_viewer = parent_viewer
+        self.layer_name = layer_name
+        self.layer_data = layer_data
+
+        self.layout = QHBoxLayout()
+        self.layout.setContentsMargins(0, 0, 0, 0)
+
+        # Checkbox for visibility
+        self.checkbox = QCheckBox()
+        self.checkbox.setChecked(True)
+        self.checkbox.stateChanged.connect(self.visible_checkbox_clicked)
+        self.layout.addWidget(self.checkbox)
+
+        # Color patch for layer
+        self.color_patch = QLabel()
+        self.color_patch.setFixedSize(16, 16)  # Small square
+        self.color_patch.setStyleSheet(f"background-color: {self.get_layer_color_hex()}; border: 1px solid black;")
+        self.color_patch.setCursor(Qt.PointingHandCursor)
+        self.color_patch.mousePressEvent = self.open_color_dialog  # Assign event for color change
+        self.layout.addWidget(self.color_patch)
+
+        # Label for the layer name
+        self.label = QLabel(layer_name)
+        self.label.setCursor(Qt.PointingHandCursor)
+        self.label.mouseDoubleClickEvent = self.activate_editor  # Assign double-click to activate editor
+        self.layout.addWidget(self.label)
+
+        # Editable name field
+        self.edit_name = CustomLineEdit(layer_name)
+        self.edit_name.focus_out_callback = self.focusOutEvent
+        self.edit_name.setToolTip("Edit the layer name (must be unique and file-system compatible).")
+        self.edit_name.hide()  # Initially hidden
+        self.edit_name.returnPressed.connect(self.deactivate_editor)  # Commit name on Enter
+        self.edit_name.editingFinished.connect(self.deactivate_editor)  # Commit name on losing focus
+        self.edit_name.textChanged.connect(self.validate_name)
+        
+        self.layout.addWidget(self.edit_name)
+
+        self.setLayout(self.layout)
+
+    def visible_checkbox_clicked(self, state):
+        visibility = state == Qt.Checked
+        self.layer_data.visible = visibility
+        self.parent_viewer.on_layer_chagned(self.layer_name)
+
+    def get_layer_color_hex(self):
+        """Convert the layer's color (numpy array) to a hex color string."""
+        color = self.layer_data.color
+        return f"rgb({color[0]}, {color[1]}, {color[2]})"
+
+    def open_color_dialog(self, event):
+        """Open a color chooser dialog and update the layer's color."""
+        current_color = QColor(self.layer_data.color[0], self.layer_data.color[1], self.layer_data.color[2])
+        new_color = QColorDialog.getColor(current_color, self, "Select Layer Color")
+
+        if new_color.isValid():
+            # Update layer color
+            self.layer_data.color = np.array([new_color.red(), new_color.green(), new_color.blue()])
+            # Update color patch
+            self.color_patch.setStyleSheet(f"background-color: {self.get_layer_color_hex()}; border: 1px solid black;")
+            # Notify the viewer to update rendering
+            self.parent_viewer.on_layer_chagned(self.layer_name)
+
+    def focusOutEvent(self, event):
+        """Deactivate the editor when it loses focus."""
+        if self.edit_name.isVisible():
+            self.deactivate_editor()
+        super().focusOutEvent(event)
+
+    def activate_editor(self, event):
+        """Activate the name editor (QLineEdit) and hide the label."""
+        self.label.hide()
+        self.edit_name.setText(self.label.text())
+        self.edit_name.show()
+        self.edit_name.setFocus()
+        self.edit_name.selectAll()  # Select all text for easy replacement
+
+    def deactivate_editor(self):
+        """Deactivate the editor, validate the name, and show the label."""
+        new_name = self.edit_name.text()
+        self.validate_name()
+
+        # If valid, update the label and layer name
+        if self.edit_name.toolTip() == "":
+            self.label.setText(new_name)
+            self.layer_name = new_name
+
+        # Show the label and hide the editor
+        self.label.show()
+        self.edit_name.hide()
+
+    def validate_name(self):
+        """Validate the layer name for uniqueness and file system compatibility."""
+        new_name = self.edit_name.text()
+
+        # Check for invalid file system characters
+        invalid_chars = r'<>:"/\|?*'
+        if any(char in new_name for char in invalid_chars) or new_name.strip() == "":
+            self.edit_name.setStyleSheet("background-color: rgb(255, 99, 71);")  # Radish color
+            self.edit_name.setToolTip("Layer name contains invalid characters or is empty.")
+            return
+
+        # Check for uniqueness
+        existing_names = [name for name in self.parent_viewer.segmentation_layers.keys() if name != self.layer_name]
+        if new_name in existing_names:
+            self.edit_name.setStyleSheet("background-color: rgb(255, 99, 71);")  # Radish color
+            self.edit_name.setToolTip("Layer name must be unique.")
+            return
+
+        # Name is valid
+        self.edit_name.setStyleSheet("")  # Reset background
+        self.edit_name.setToolTip("")
+        self.update_layer_name(new_name)
+
+
+    def update_layer_name(self, new_name):
+        """Update the layer name in the viewer."""
+        if new_name != self.layer_name:
+            self.parent_viewer.segmentation_layers[new_name] = self.parent_viewer.segmentation_layers.pop(self.layer_name)
+            self.layer_name = new_name
+
+class LabeledSlider(QWidget):
+    def __init__(self, label_text="Slider", min_value=0, max_value=100, initial_value=50, orientation=Qt.Horizontal):
+        super().__init__()
+
+        # Create the components
+        self.label = QLabel(label_text)
+        self.label.setAlignment(Qt.AlignRight)  # Align label text to the right
+        self.slider = QSlider(orientation)
+        self.current_value_label = QLabel(str(initial_value))
+
+        # Set slider properties
+        self.slider.setMinimum(min_value)
+        self.slider.setMaximum(max_value)
+        self.slider.setValue(initial_value)
+
+        # Connect the slider value change signal to the update function
+        self.slider.valueChanged.connect(self.update_value_label)
+
+        # Layout
+        main_layout = QHBoxLayout()  # Horizontal layout for label, slider, and value display
+
+        # Add widgets to layouts with margins
+        main_layout.addWidget(self.label)
+        main_layout.addWidget(self.slider, stretch=1)  # Let slider expand to fill space
+        main_layout.addWidget(self.current_value_label)
+
+        # Set margins for better spacing
+        main_layout.setContentsMargins(10, 5, 10, 5)  # Left, top, right, bottom
+
+        self.setLayout(main_layout)
+
+    def update_value_label(self, value):
+        """Update the dynamic value display when the slider changes."""
+        self.current_value_label.setText(str(value))
+
+    def get_value(self):
+        """Get the current slider value."""
+        return self.slider.value()
+
+    def set_value(self, value):
+        """Set the slider value."""
+        self.slider.setValue(value)
+
+    def setMinimum(self, min):
+        self.slider.setMinimum(min)
+            
+    def setMaximum(self, min):
+        self.slider.setMaximum(min)
+
+    def setTickInterval(self, min):
+        self.slider.setTickInterval(min)
+
+    def setValue(self, min):
+        self.slider.setValue(min)
+    
+    def value(self):
+        return self.slider.value()
+    
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+
+        self.image_array = None
+        self.segmentation_layers = {}
+        self.active_layer_name = None
+
+        self.color_rotator = ColorRotator()
+
+        self.init_ui()
+
+    def on_layer_chagned(self,layer_name):
+        self.graphics_view.update()
+        
+    def init_ui(self):
+        self.setWindowTitle("Image Labeler 2D")
+        self.setGeometry(100, 100, 1024, 786)
+
+        self.main_widget = QWidget()
+        self.layout = QVBoxLayout()
+
+        # Graphics View
+        self.graphics_view = GraphicsView2D(self, self)
+        self.graphics_scene = QGraphicsScene(self)
+        self.graphics_view.setScene(self.graphics_scene)
+        self.layout.addWidget(self.graphics_view)
+
+        # Set the layout
+        self.main_widget.setLayout(self.layout)
+        self.setCentralWidget(self.main_widget)
+
+        # Add the File menu
+        self.create_menu()
+      
+        
+        self.create_file_toolbar()
+        self.create_paintbrush_toolbar()
+        self.create_view_toolbar()
+        self.create_layer_manager()
+
+        self.create_point_manager()
+        self.create_point_edit_toolbar()
+
+        # Add status bar
+        self.status_bar = self.statusBar()
+        self.status_bar.showMessage("Ready")  # Initial message
+
+        self.dicom_image = None
+
+    def create_menu(self):
+        # Create a menu bar
+        menubar = self.menuBar()
+
+        # Add the File menu
+        file_menu = menubar.addMenu("File")
+        self.create_file_menu(file_menu)
+
+        # Add View menu
+        view_menu = menubar.addMenu("View")
+        self.create_view_menu(view_menu)
+
+
+    def create_file_menu(self, file_menu):
+        
+        # Add Open DICOM action
+        open_action = QAction("Open", self)
+        open_action.triggered.connect(self.open_dicom)
+        file_menu.addAction(open_action)
+
+        # Add Save Segmentation action
+        save_action = QAction("Save", self)
+        save_action.triggered.connect(self.save_segmentation)
+        file_menu.addAction(save_action)
+
+    def create_view_menu(self, view_menu):
+        
+        # Zoom In
+        zoom_in_action = QAction("Zoom In", self)
+        zoom_in_action.triggered.connect(self.zoom_in_clicked)
+        view_menu.addAction(zoom_in_action)
+
+        # Zoom Out
+        zoom_out_action = QAction("Zoom Out", self)
+        zoom_out_action.triggered.connect(self.zoom_out_clicked)
+        view_menu.addAction(zoom_out_action)
+
+        # Zoom Reset
+        zoom_reset_action = QAction("Zoom Reset", self)
+        zoom_reset_action.triggered.connect(self.zoom_reset_clicked)
+        view_menu.addAction(zoom_reset_action)
+        
+    def create_file_toolbar(self):
+        # Create a toolbar
+        toolbar = QToolBar("File Toolbar", self)
+        self.addToolBar(Qt.TopToolBarArea, toolbar)
+
+        # Add actions to the toolbar
+        # Add Open DICOM action
+        open_action = QAction("Open", self)
+        open_action.triggered.connect(self.open_dicom)
+        toolbar.addAction(open_action)
+
+        save_action = QAction("Save", self)
+        save_action.triggered.connect(self.save_segmentation)
+        toolbar.addAction(save_action)
+
+    def create_point_manager(self):
+        # Create a dockable widget
+        dock = QDockWidget("Point List Manager", self)
+        dock.setAllowedAreas(Qt.RightDockWidgetArea)
+        self.addDockWidget(Qt.RightDockWidgetArea, dock)
+
+        # Create the PointManager widget
+        self.point_manager = PointManager(self)
+        dock.setWidget(self.point_manager)
+
+    def create_point_edit_toolbar(self):
+        # Create a PointEdit toolbar
+        toolbar = QToolBar("PointEdit Toolbar", self)
+        self.addToolBar(Qt.TopToolBarArea, toolbar)
+
+        # Add toggle button for point editing
+        self.graphics_view.pointlist_renderer.point_edit_active = False  # Initially inactive
+        self.point_edit_action = QAction("Edit Points", self)
+        self.point_edit_action.setCheckable(True)  # Make it toggleable
+        self.point_edit_action.setChecked(self.graphics_view.pointlist_renderer.point_edit_active)  # Sync with initial state
+        self.point_edit_action.triggered.connect(self.toggle_point_edit)
+        toolbar.addAction(self.point_edit_action)
+        
+    def update_point_manager(self):
+        """Update the point manager UI when points change."""
+        self.point_manager.update_point_list()
+
+    def create_paintbrush_toolbar(self):
+        # Create a toolbar
+        toolbar = QToolBar("PaintBrush Toolbar", self)
+        self.addToolBar(Qt.TopToolBarArea, toolbar)
+
+        # Add Brush Tool button
+        self.brush_active = False  # Initially inactive
+        self.brush_action = QAction("Brush Tool", self)
+        self.brush_action.setCheckable(True)  # Make it togglable
+        self.brush_action.setChecked(self.brush_active)  # Sync with initial state
+        self.brush_action.triggered.connect(self.toggle_brush_tool)
+        self.brush_action.setIcon(QIcon(brush_icon_path))
+        toolbar.addAction(self.brush_action)
+
+        # Add Erase Tool button
+        self.erase_active = False  # Initially inactive
+        self.erase_action = QAction("Erase Tool", self)
+        self.erase_action.setCheckable(True)
+        self.erase_action.setChecked(self.erase_active)
+        self.erase_action.triggered.connect(self.toggle_erase_tool)
+        self.erase_action.setIcon(QIcon(eraser_icon_path))
+        toolbar.addAction(self.erase_action)
+
+        # paintbrush size slider
+        self.brush_size_slider = LabeledSlider("Brush Size:", initial_value=20)
+        self.brush_size_slider.slider.valueChanged.connect(self.update_brush_size)
+        toolbar.addWidget(self.brush_size_slider)
+
+    def create_view_toolbar(self):
+        # Create a toolbar
+        toolbar = QToolBar("View Toolbar", self)
+        self.addToolBar(Qt.TopToolBarArea, toolbar)
+
+        # window_level_slider - level slider
+        self.window_level_slider = LabeledSlider("Window Level:")
+        self.window_level_slider.slider.valueChanged.connect(self.update_window_level)
+        toolbar.addWidget(self.window_level_slider)
+
+        # window_level_slider - width slider
+        self.window_width_slider = LabeledSlider("Window Width:")
+        self.window_width_slider.slider.valueChanged.connect(self.update_window_level)
+        toolbar.addWidget(self.window_width_slider)
+        
+        # zoom in action
+        zoom_in_action = QAction("Zoom In", self)
+        zoom_in_action.triggered.connect(self.zoom_in_clicked)
+        toolbar.addAction(zoom_in_action)    
+        
+         # zoom in action
+        zoom_out_action = QAction("Zoom Out", self)
+        zoom_out_action.triggered.connect(self.zoom_out_clicked)
+        toolbar.addAction(zoom_out_action)    
+
+        # zoom reset button
+        zoom_reset_action = QAction("Zoom Reset", self)
+        zoom_reset_action.triggered.connect(self.zoom_reset_clicked)
+        toolbar.addAction(zoom_reset_action)        
+
+    def zoom_in_clicked(self):
+        if self.image_array is not None:
+            self.graphics_view.zoom_in()
+    
+    def zoom_out_clicked(self):
+        if self.image_array is not None:
+            self.graphics_view.zoom_out()
+
+    def zoom_reset_clicked(self):
+        if self.image_array is not None:
+            self.graphics_view.zoom_reset()
+
+    def create_layer_manager(self):
+        # Create a dockable widget
+        dock = QDockWidget("Segmentation Layer Manager ", self)
+        dock.setAllowedAreas(Qt.RightDockWidgetArea)
+        self.addDockWidget(Qt.RightDockWidgetArea, dock)
+
+        # Layer manager layout
+        layer_widget = QWidget()
+        layer_layout = QVBoxLayout()
+
+        # Layer list
+        self.list_widget_for_segmentation_layers = QListWidget()
+        self.list_widget_for_segmentation_layers.currentItemChanged.connect(self.layer_list_widget_on_current_item_changed)
+        layer_layout.addWidget(self.list_widget_for_segmentation_layers)
+
+        # Buttons to manage layers
+        button_layout = QHBoxLayout()
+
+        add_layer_button = QPushButton("Add Layer")
+        add_layer_button.clicked.connect(self.add_layer_clicked)
+        button_layout.addWidget(add_layer_button)
+
+        remove_layer_button = QPushButton("Remove Layer")
+        remove_layer_button.clicked.connect(self.remove_layer_clicked)
+        button_layout.addWidget(remove_layer_button)
+
+        # Add the button layout at the top
+        layer_layout.addLayout(button_layout)
+        # Set layout for the layer manager
+        layer_widget.setLayout(layer_layout)
+        dock.setWidget(layer_widget)
+
+
+    def toggle_brush_tool(self):
+        self.brush_active = not self.brush_active
+        self.erase_active = False  # Disable erase tool when brush is active
+        self.erase_action.setChecked(False)  # Uncheck the erase button
+
+        self.brush_action.setChecked(self.brush_active)
+        if self.brush_active:
+            self.brush_action.setText("Brush Tool (Active)")
+            self.status_bar.showMessage("Brush tool activated")
+        else:
+            self.brush_action.setText("Brush Tool (Inactive)")
+            self.status_bar.showMessage("Brush tool deactivated")
+
+    def toggle_erase_tool(self):
+        self.erase_active = not self.erase_active
+        self.brush_active = False  # Disable brush tool when erase is active
+        self.brush_action.setChecked(False)  # Uncheck the brush button
+
+        self.erase_action.setChecked(self.erase_active)
+        if self.erase_active:
+            self.erase_action.setText("Erase Tool (Active)")
+            self.status_bar.showMessage("Erase tool activated")
+        else:
+            self.erase_action.setText("Erase Tool (Inactive)")
+            self.status_bar.showMessage("Erase tool deactivated")    
+                
+
+    def toggle_point_edit(self):
+        self.graphics_view.pointlist_renderer.point_edit_active = not self.graphics_view.pointlist_renderer.point_edit_active
+        self.point_edit_action.setChecked(self.graphics_view.pointlist_renderer.point_edit_active)
+        if self.graphics_view.pointlist_renderer.point_edit_active:
+            self.print_status("Point editing activated.")
+        else:
+            self.print_status("Point editing deactivated.")
+
+    def layer_list_widget_on_current_item_changed(self, current, previous):
+        if current:
+            # Retrieve the custom widget associated with the current QListWidgetItem
+            item_widget = self.list_widget_for_segmentation_layers.itemWidget(current)
+            
+            if item_widget and isinstance(item_widget, LayerItemWidget):
+                # Access the layer_name from the custom widget
+                layer_name = item_widget.layer_name
+                if self.active_layer_name != layer_name:
+                    self.active_layer_name = layer_name
+                    self.graphics_view.render_layers()
+
+    def generate_unique_layer_name(self, base_name="Layer"):
+        index = 1
+        while f"{base_name} {index}" in self.segmentation_layers:
+            index += 1
+        return f"{base_name} {index}"
+    
+    def add_layer_clicked(self):
+
+        # Generate a random bright color for the new layer
+        layer_color = self.color_rotator.next()
+
+        # add layer data        
+        layer_name = self.generate_unique_layer_name()
+        layer_data = SegmentationLayer(segmentation=np.zeros_like(self.image_array, dtype=np.uint8), color=layer_color)
+        self.segmentation_layers[layer_name] = layer_data
+
+        # Create a custom widget for the layer
+        layer_item_widget = LayerItemWidget(layer_name, layer_data, self)
+        layer_item = QListWidgetItem(self.list_widget_for_segmentation_layers)
+        layer_item.setSizeHint(layer_item_widget.sizeHint())
+        self.list_widget_for_segmentation_layers.addItem(layer_item)
+        self.list_widget_for_segmentation_layers.setItemWidget(layer_item, layer_item_widget) # This replaces the default text-based display with the custom widget that includes the checkbox and label.
+
+        # set the added as active (do I need to indicate this in the list widget?)
+        self.active_layer_name = layer_name
+
+        # render
+        self.graphics_view.render_layers()
+
+    def remove_layer_clicked(self):
+        if len(self.list_widget_for_segmentation_layers) == 1:
+                self.print_to_statusbar("At least 1 layer is required.")
+                return 
+
+        selected_items = self.list_widget_for_segmentation_layers.selectedItems()
+        if not selected_items:
+            return
+
+        for item in selected_items:
+            widget = self.list_widget_for_segmentation_layers.itemWidget(item)
+            layer_name = widget.layer_name
+
+            # Remove from the data list
+            del self.segmentation_layers[layer_name]
+
+            # Remove from the list widget
+            self.list_widget_for_segmentation_layers.takeItem(self.list_widget_for_segmentation_layers.row(item))
+
+        # update
+        self.graphics_view.render_layers()
+
+    def update_brush_size(self, value):
+
+        self.graphics_view.paintbrush.radius = value
+
+        if self.image_array is not None:
+            self.graphics_view.render_layers()
+
+    
+    def update_window_level(self):
+        
+        if self.image_array is not None:
+            self.graphics_view.render_layers()
+
+   
+
+    def open_dicom(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Open DICOM File", "", "DICOM Files (*.dcm)")
+        if file_path:
+            # Load DICOM using SimpleITK
+            self.dicom_image = sitk.ReadImage(file_path)
+            image_array = sitk.GetArrayFromImage(self.dicom_image)[0]
+
+            # Set default window-level values
+            min = np.min(image_array)
+            max = np.max(image_array)
+
+            default_level = int((max + min) / 2)
+            default_width = int(max - min)
+
+            self.window_level_slider.setMinimum(min)
+            self.window_level_slider.setMaximum(max)
+            self.window_level_slider.setTickInterval(int(default_width/200))
+            self.window_level_slider.setValue(default_level)
+            
+            self.window_width_slider.setMinimum(1)
+            self.window_width_slider.setMaximum(default_width)
+            self.window_width_slider.setTickInterval(int(default_width/200))
+            self.window_width_slider.setValue(default_width)
+
+            self.image_array = image_array
+
+            self.add_layer_clicked()
+            
+            self.update_window_level()
+
+            self.graphics_view.render_layers()
+
+    def get_active_layer_data(self):
+        if self.active_layer_name == None:
+            return 
+        
+        layer_data = self.segmentation_layers[self.active_layer_name]
+
+        return layer_data
+    
+    def save_segmentation(self):
+        
+        if self.image_array is None:
+            self.print_to_statusbar("No image loaded. Cannot save segmentation.")
+            return
+    
+        if self.active_layer_name:
+            file_path, _ = QFileDialog.getSaveFileName(self, "Save Segmentation", "", "MetaImage Files (*.mha *.mhd)")
+            if file_path:
+                # Get the active layer's segmentation
+                segmentation = self.graphics_view.segmentation_layers[self.active_layer_name].segmentation
+
+                # Expand 2D segmentation into 3D (single slice)
+                segmentation_3d = np.expand_dims(segmentation, axis=0)
+                segmentation_image = sitk.GetImageFromArray(segmentation_3d)
+
+                # Copy spatial metadata from the original DICOM image
+                segmentation_image.CopyInformation(self.dicom_image)
+
+                # Save the segmentation as .mha
+                sitk.WriteImage(segmentation_image, file_path)
+                self.print_to_statusbar(f"Active layer segmentation saved to {file_path}")
+        else:
+            self.print_to_statusbar("No active layer to save.")
+
+    def print_status(self, msg):
+        self.status_bar.showMessage(msg)
+
+
+class MyApplication(QApplication):
+    def notify(self, receiver, event):
+        
+        #if event.type() == QEvent.FocusOut:
+        #    print(f"Focus out: {receiver}")
+        
+        return super().notify(receiver, event)
+    
+
+if __name__ == "__main__":
+    app = MyApplication(sys.argv)
+    viewer = MainWindow()
+    viewer.show()
+    sys.exit(app.exec_())
+
+# Start of labeled_slider.py
+from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import ( QSlider, QLabel, QWidget, QHBoxLayout)
+
+class LabeledSlider(QWidget):
+    def __init__(self, label_text="Slider", min_value=0, max_value=100, initial_value=50, orientation=Qt.Horizontal):
+        super().__init__()
+
+        # Create the components
+        self.label = QLabel(label_text)
+        self.label.setAlignment(Qt.AlignRight)  # Align label text to the right
+        self.slider = QSlider(orientation)
+        self.current_value_label = QLabel(str(initial_value))
+
+        # Set slider properties
+        self.slider.setMinimum(min_value)
+        self.slider.setMaximum(max_value)
+        self.slider.setValue(initial_value)
+
+        # Connect the slider value change signal to the update function
+        self.slider.valueChanged.connect(self.update_value_label)
+
+        # Layout
+        main_layout = QHBoxLayout()  # Horizontal layout for label, slider, and value display
+
+        # Add widgets to layouts with margins
+        main_layout.addWidget(self.label)
+        main_layout.addWidget(self.slider, stretch=1)  # Let slider expand to fill space
+        main_layout.addWidget(self.current_value_label)
+
+        # Set margins for better spacing
+        main_layout.setContentsMargins(10, 5, 10, 5)  # Left, top, right, bottom
+
+        self.setLayout(main_layout)
+
+    def update_value_label(self, value):
+        """Update the dynamic value display when the slider changes."""
+        self.current_value_label.setText(str(value))
+
+    def get_value(self):
+        """Get the current slider value."""
+        return self.slider.value()
+
+    def set_value(self, value):
+        """Set the slider value."""
+        self.slider.setValue(value)
+
+    def setMinimum(self, min):
+        self.slider.setMinimum(min)
+            
+    def setMaximum(self, min):
+        self.slider.setMaximum(min)
+
+    def setTickInterval(self, min):
+        self.slider.setTickInterval(min)
+
+    def setValue(self, min):
+        self.slider.setValue(min)
+    
+    def value(self):
+        return self.slider.value()
+    
+
+# Start of line_edit2.py
+from PyQt5.QtWidgets import (QLineEdit)
+
+class LineEdit2(QLineEdit):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.focus_out_callback = None  # Placeholder for the callback
+
+    def focusOutEvent(self, event):
+        if self.focus_out_callback:
+            self.focus_out_callback(event)  # Call the assigned function
+        super().focusOutEvent(event)  # Ensure default behavior
+
+# Start of point_list_manager.py
+import sys
+import numpy as np
+import SimpleITK as sitk
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QGraphicsView, QGraphicsScene,
+    QFileDialog, QVBoxLayout, QSlider, QPushButton, QLabel, QWidget, QMenuBar, QAction, QToolBar, QDockWidget, QListWidget, QHBoxLayout, QPushButton, QCheckBox, QLineEdit
+)
+from PyQt5.QtCore import Qt, QEvent
+from PyQt5.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QIcon
+import cv2
+
+import os
+
+### helper functions
+import numpy as np
+
+class Point:
+    def __init__(self, x: int, y: int, name:str, color: tuple = (255, 0, 0), visible: bool = True):
+        self.x = x
+        self.y = y
+        self.name = name
+        self.color = color
+        self.visible = visible
+
+class PointItemWidget(QWidget):
+    def __init__(self, point, parent_manager):
+        super().__init__()
+        self.point = point
+        self.parent_manager = parent_manager
+
+        # Layout
+        self.layout = QHBoxLayout()
+        self.layout.setContentsMargins(0, 0, 0, 0)
+
+        # Visibility checkbox
+        self.checkbox = QCheckBox()
+        self.checkbox.setChecked(self.point.visible)
+        self.checkbox.stateChanged.connect(self.toggle_visibility)
+        self.layout.addWidget(self.checkbox)
+
+        # Color patch
+        self.color_patch = QLabel()
+        self.color_patch.setFixedSize(16, 16)
+        self.color_patch.setStyleSheet(f"background-color: {self.get_color_hex()}; border: 1px solid black;")
+        self.color_patch.setCursor(Qt.PointingHandCursor)
+        self.color_patch.mousePressEvent = self.change_color
+        self.layout.addWidget(self.color_patch)
+
+        # Editable name
+        self.name_label = QLabel(self.point.name)
+        self.name_label.setCursor(Qt.PointingHandCursor)
+        self.name_label.mouseDoubleClickEvent = self.activate_editor
+        self.layout.addWidget(self.name_label)
+
+        self.name_editor = QLineEdit(self.point.name)
+        self.name_editor.setVisible(False)
+        self.name_editor.returnPressed.connect(self.deactivate_editor)
+        self.name_editor.editingFinished.connect(self.deactivate_editor)
+        self.layout.addWidget(self.name_editor)
+
+        self.setLayout(self.layout)
+
+    def toggle_visibility(self, state):
+        self.point.visible = state == Qt.Checked
+        self.parent_manager.update_points()
+
+    def change_color(self, event):
+        color = QColorDialog.getColor()
+        if color.isValid():
+            self.point.color = (color.red(), color.green(), color.blue())
+            self.color_patch.setStyleSheet(f"background-color: {color.name()}; border: 1px solid black;")
+            self.parent_manager.update_points()
+
+    def activate_editor(self, event):
+        self.name_label.hide()
+        self.name_editor.show()
+        self.name_editor.setFocus()
+        self.name_editor.selectAll()
+
+    def deactivate_editor(self):
+        new_name = self.name_editor.text().strip()
+        if new_name and self.parent_manager.is_name_unique(new_name):
+            self.point.name = new_name
+            self.name_label.setText(new_name)
+        else:
+            self.parent_manager.parent_viewer.print_status("Name must be unique or valid!")
+        self.name_label.show()
+        self.name_editor.hide()
+
+    def get_color_hex(self):
+        r, g, b = self.point.color
+        return f"rgb({r}, {g}, {b})"
+
+
+class PointListRenderer:
+    def __init__(self, manager) -> None:
+        self.manager = manager
+        
+
+    def render_rgb(self, overlay_rgb, image_x=None, image_y=None):
+        # Render each layer if it is visible
+        for i, point in enumerate(self.manager.points):
+            if point.visible:
+                color = point.color
+                x, y = point.x, point.y
+                cv2.circle(overlay_rgb, (x, y), radius=5, color=color, thickness=-1)
+                if i == self.active_point_index:
+                    # Draw a larger circle around the active point
+                    cv2.circle(overlay_rgb, (x, y), radius=8, color=(255, 255, 255), thickness=1)
+
+    def get_image_array(self):
+        return self.manager.image_array
+    
+    def image_loaded(self):
+        return self.get_image_array() != None
+
+    def mousePressEvent(self, event):
+        if not self.image_loaded():
+            return 
+
+        if event.button() == Qt.LeftButton:
+            if self.manager.point_edit_active:
+                # Handle point editing
+                scene_pos = self.mapToScene(event.pos())
+                x, y = int(scene_pos.x()), int(scene_pos.y())
+                for i, point in enumerate(self.manager.points):
+                    if (point.x - x) ** 2 + (point.y - y) ** 2 <= 5 ** 2:  # Check proximity
+                        self.manager.active_point_index = i
+                        self.manager.dragging_point = True
+                        self.manager.update_point_manager()
+                        return
+    
+    def mouseMoveEvent(self, event):
+        if not self.image_loaded():
+            return 
+
+        if self.manager.point_edit_active and self.manager.dragging_point and self.manager.active_point_index is not None:
+            # Move the active point
+            scene_pos = self.mapToScene(event.pos())
+            x, y = int(scene_pos.x()), int(scene_pos.y())
+            self.manager.points[self.manager.active_point_index].x = x
+            self.manager.points[self.manager.active_point_index].y = y
+            self.manager.update_point_manager()
+
+    def mouseReleaseEvent(self, event):
+        if not self.image_loaded():
+            return 
+
+        if self.point_edit_active and event.button() == Qt.LeftButton:
+            self.dragging_point = False
+
+class PointListWidget(QWidget):
+    def __init__(self, manager):
+        super().__init__()
+        self.manager = manager
+        self.layout = QVBoxLayout()
+
+        # List of points
+        self.point_list_widget = QListWidget()
+        self.point_list_widget.currentItemChanged.connect(self.on_point_selected)
+        self.layout.addWidget(self.point_list_widget)
+
+        # Add/Remove buttons
+        button_layout = QHBoxLayout()
+        add_point_button = QPushButton("Add Point")
+        add_point_button.clicked.connect(self.add_point)
+        remove_point_button = QPushButton("Remove Point")
+        remove_point_button.clicked.connect(self.remove_point)
+        button_layout.addWidget(add_point_button)
+        button_layout.addWidget(remove_point_button)
+        self.layout.addLayout(button_layout)
+
+        self.setLayout(self.layout)
+
+    def get_graphics_view(self):
+        self.manager.get_graphics_view()
+
+    def add_point(self):
+        """Add a new point with a unique name, placing it at the center of the viewport."""
+        name = self.generate_unique_name()
+        
+        # Get the center of the viewport in scene coordinates
+        viewport_center = self.get_graphics_view().mapToScene(
+            self.get_graphics_view().viewport().rect().center()
+        )
+        x, y = int(viewport_center.x()), int(viewport_center.y())
+
+        # Create the new point at the center of the viewport
+        new_point = Point(x, y, name)
+        self.manager.pointlist_renderer.points.append(new_point)
+        self.update_point_list()
+
+        self.get_graphics_view().update()    
+    
+    def remove_point(self):
+        """Remove the selected point."""
+        current_row = self.point_list_widget.currentRow()
+        if current_row != -1:
+            del self.manager.points[current_row]
+            self.manager.active_point_index = None
+            self.update_point_list()
+
+    def on_point_selected(self, current, previous):
+        """Set the selected point as active."""
+        if current:
+            index = self.point_list_widget.row(current)
+            self.manager.active_point_index = index
+
+    def update_point_list(self):
+        """Update the point list."""
+        self.point_list_widget.clear()
+        for point in self.manager.points:
+            item = QListWidgetItem(self.point_list_widget)
+            item_widget = PointItemWidget(point, self)
+            item.setSizeHint(item_widget.sizeHint())
+            self.point_list_widget.addItem(item)
+            self.point_list_widget.setItemWidget(item, item_widget)
+
+    def generate_unique_name(self, base_name="Point"):
+        """Generate a unique name for a new point."""
+        index = 1
+        while any(p.name == f"{base_name} {index}" for p in self.manager.points):
+            index += 1
+        return f"{base_name} {index}"
+
+    def is_name_unique(self, name):
+        """Check if a name is unique."""
+        return not any(p.name == name for p in self.manager.points)
+
+    def update_points(self):
+        """Re-render points in the graphics view."""
+        self.get_graphics_view().render_layers()
+
+from PyQt5.QtWidgets import QWidget, QHBoxLayout, QCheckBox, QLabel, QListWidgetItem, QColorDialog
+from color_rotator import ColorRotator
+
+color_rotator = ColorRotator()
+
+class PointListManager:
+    
+    def __init__(self, mainwindow):
+
+        # mainwindow
+        self._mainwindow = mainwindow
+
+        # data
+        self.points = []  # List of Point objects
+        self.active_point_index = None  # Index of the active point
+        self.dragging_point = False  # State for dragging
+        self.point_edit_active = False
+
+        self.image_array = None
+
+        self.renderer = PointListRenderer(self)  
+      
+    def init_ui(self):
+        self.create_point_manager()
+        self.create_point_edit_toolbar()
+
+    def get_mainwindow(self):
+        return self._mainwindow
+
+      
+
+    def create_point_manager(self):
+        
+        mainwindow = self.get_mainwindow()
+        
+        # Create a dockable widget
+        dock = QDockWidget("Point List Manager", mainwindow)
+        dock.setAllowedAreas(Qt.RightDockWidgetArea)
+        mainwindow.addDockWidget(Qt.RightDockWidgetArea, dock)
+
+        # Create the PointListManager widget
+        self.point_manager = PointListWidget(self)
+        dock.setWidget(self.point_manager)
+
+    def create_point_edit_toolbar(self):
+        
+        mainwindow = self.get_mainwindow()
+
+        # Create a PointEdit toolbar
+        toolbar = QToolBar("PointEdit Toolbar", mainwindow)
+        mainwindow.addToolBar(Qt.TopToolBarArea, toolbar)
+
+        # Add toggle button for point editing
+        self.point_edit_active = False  # Initially inactive
+        self.point_edit_action = QAction("Edit Points", mainwindow)
+        self.point_edit_action.setCheckable(True)  # Make it toggleable
+        self.point_edit_action.setChecked(self.point_edit_active)  # Sync with initial state
+        self.point_edit_action.triggered.connect(self.toggle_point_edit)
+        toolbar.addAction(self.point_edit_action)
+        
+    def update_point_manager(self):
+        """Update the point manager UI when points change."""
+        self.point_manager.update_point_list()
+      
+    def toggle_point_edit(self):
+        self.renderer.point_edit_active = not self.point_edit_active
+        self.point_edit_action.setChecked(self.point_edit_active)
+        if self.point_edit_active:
+            self.print_status("Point editing activated.")
+        else:
+            self.print_status("Point editing deactivated.")
+
+    def on_image_loaded(self, image_array):
+        self.image_array = image_array
+
+   
+    def print_status(self, msg):
+        self.get_mainwindow().status_bar.showMessage(msg)
+
+    def on_image_loaded(self, sitk_image):
+        pass
+
+    def save_state(self,data_dict, data_dir):
+        
+        data_dict["points"] = []
+
+        for point in self.points:
+            data_dict["points"].append({
+                "x": point.x,
+                "y": point.y,
+                "name": point.name,
+                "color": point.color,
+                "visible": point.visible,
+            })
+
+    def load_state(self, data_dict, data_dir, aux_data):
+        
+        self.sitk_image = aux_data['base_image']
+        
+        self.points = []
+
+        for point_data in data_dict.get("points", []):
+            try:
+                self.points.append(
+                    Point(
+                        x=point_data["x"],
+                        y=point_data["y"],
+                        name=point_data["name"],
+                        color=tuple(point_data["color"]),  # Convert to tuple
+                        visible=point_data["visible"],
+                    )
+                )
+            except KeyError as e:
+                self.print_status(f"Invalid point data: missing key {e}")
+
+# Start of ruler_widget.py
+from PyQt5.QtWidgets import QGraphicsLineItem, QGraphicsEllipseItem, QGraphicsTextItem
+from PyQt5.QtCore import Qt, QPointF
+from PyQt5.QtGui import QPen, QColor
+from PyQt5.QtWidgets import QGraphicsItem
+import math
+
+
+class RulerWidget(QGraphicsLineItem):
+    def __init__(self, start_point=QPointF(100, 100), end_point=QPointF(200, 100), parent_scene=None):
+        super().__init__()
+        self.start_point = start_point
+        self.end_point = end_point
+        self.parent_scene = parent_scene
+
+        # Line appearance
+        self.pen = QPen(QColor("blue"))
+        self.pen.setWidth(2)
+        self.setPen(self.pen)
+
+        # Create endpoints as draggable handles
+        self.start_handle = QGraphicsEllipseItem(-5, -5, 10, 10)
+        self.start_handle.setBrush(QColor("red"))
+        self.start_handle.setFlag(QGraphicsEllipseItem.ItemIsMovable, True)
+        self.start_handle.setFlag(QGraphicsEllipseItem.ItemSendsGeometryChanges, True)
+
+        self.end_handle = QGraphicsEllipseItem(-5, -5, 10, 10)
+        self.end_handle.setBrush(QColor("red"))
+        self.end_handle.setFlag(QGraphicsEllipseItem.ItemIsMovable, True)
+        self.end_handle.setFlag(QGraphicsEllipseItem.ItemSendsGeometryChanges, True)
+
+        # Distance label
+        self.distance_label = QGraphicsTextItem("")
+        self.distance_label.setDefaultTextColor(QColor("black"))
+
+        # Enable dragging of the entire line
+        self.setFlag(QGraphicsLineItem.ItemIsMovable, True)
+        self.setFlag(QGraphicsLineItem.ItemSendsGeometryChanges, True)
+
+        # Add items to the scene
+        if self.parent_scene:
+            self.parent_scene.addItem(self)
+            self.parent_scene.addItem(self.start_handle)
+            self.parent_scene.addItem(self.end_handle)
+            self.parent_scene.addItem(self.distance_label)
+
+        self.update_positions()
+
+    def update_positions(self):
+        """Update the line, handles, and distance label based on the positions."""
+        self.setLine(self.start_point.x(), self.start_point.y(), self.end_point.x(), self.end_point.y())
+        self.start_handle.setPos(self.start_point.x() - 5, self.start_point.y() - 5)
+        self.end_handle.setPos(self.end_point.x() - 5, self.end_point.y() - 5)
+
+        # Update distance label
+        self.render_distance_label()
+
+    def render_distance_label(self):
+        """Update the distance label."""
+        distance = self.calculate_distance()
+        midpoint = QPointF(
+            (self.start_point.x() + self.end_point.x()) / 2,
+            (self.start_point.y() + self.end_point.y()) / 2,
+        )
+        self.distance_label.setPlainText(f"{distance:.2f}")
+        self.distance_label.setPos(midpoint.x(), midpoint.y() - 20)
+
+    def calculate_distance(self):
+        """Calculate the distance between the two endpoints."""
+        return math.sqrt((self.end_point.x() - self.start_point.x()) ** 2 +
+                         (self.end_point.y() - self.start_point.y()) ** 2)
+
+    def mouseMoveEvent(self, event):
+        
+        print('mouse move event')
+
+        """Handle movement of the entire ruler."""
+        delta = event.scenePos() - event.lastScenePos()
+        self.start_point += delta
+        self.end_point += delta
+        self.update_positions()
+        super().mouseMoveEvent(event)
+
+    def update_endpoints(self):
+        """Update the start and end points based on handle positions."""
+        self.start_point = self.start_handle.scenePos() + QPointF(5, 5)
+        self.end_point = self.end_handle.scenePos() + QPointF(5, 5)
+        self.update_positions()
+
+    def itemChange(self, change, value):
+        """React to changes in handle positions."""
+        if change == QGraphicsItem.ItemPositionChange:
+            self.update_endpoints()
+        return super().itemChange(change, value)
+
+
+# Start of segmentation_list_manager.py
+import sys
+import numpy as np
+import SimpleITK as sitk
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QGraphicsView, QGraphicsScene,
+    QFileDialog, QVBoxLayout, QSlider, QPushButton, QLabel, QWidget, QMenuBar, QAction, QToolBar, QDockWidget, QListWidget, QHBoxLayout, QPushButton, QCheckBox, QLineEdit
+)
+from PyQt5.QtCore import Qt, QEvent
+from PyQt5.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QIcon
+import cv2
+
+from PyQt5.QtWidgets import QWidget, QHBoxLayout, QCheckBox, QLabel, QListWidgetItem, QColorDialog
+
+import os
+
+import numpy as np
+
+from color_rotator import ColorRotator
+from labeled_slider import LabeledSlider
+from line_edit2 import LineEdit2
+
+
+# Get the current directory of the script
+current_dir = os.path.dirname(__file__)
+
+# Construct paths to the icons
+brush_icon_path = os.path.join(current_dir, "icons", "brush.png")
+eraser_icon_path = os.path.join(current_dir, "icons", "eraser.png")
+reset_zoom_icon_path = os.path.join(current_dir, "icons", "reset_zoom.png")
+
+color_rotator = ColorRotator()
+
+class SegmentationLayer:
+    def __init__(self, segmentation, visible=True, color=np.array([255, 255, 128]), alpha=0.5) -> None:
+        self.segmentation = segmentation
+        self.visible = visible
+        self.color = color
+        self.alpha = alpha
+        self.modified = False
+
+class LayerItemWidget(QWidget):
+    def __init__(self, layer_name, layer_data, parent_viewer):
+        super().__init__()
+        self.parent_viewer = parent_viewer
+        self.layer_name = layer_name
+        self.layer_data = layer_data
+
+        self.layout = QHBoxLayout()
+        self.layout.setContentsMargins(0, 0, 0, 0)
+
+        # Checkbox for visibility
+        self.checkbox = QCheckBox()
+        self.checkbox.setChecked(True)
+        self.checkbox.stateChanged.connect(self.visible_checkbox_clicked)
+        self.layout.addWidget(self.checkbox)
+
+        # Color patch for layer
+        self.color_patch = QLabel()
+        self.color_patch.setFixedSize(16, 16)  # Small square
+        self.color_patch.setStyleSheet(f"background-color: {self.get_layer_color_hex()}; border: 1px solid black;")
+        self.color_patch.setCursor(Qt.PointingHandCursor)
+        self.color_patch.mousePressEvent = self.open_color_dialog  # Assign event for color change
+        self.layout.addWidget(self.color_patch)
+
+        # Label for the layer name
+        self.label = QLabel(layer_name)
+        self.label.setCursor(Qt.PointingHandCursor)
+        self.label.mouseDoubleClickEvent = self.activate_editor  # Assign double-click to activate editor
+        self.layout.addWidget(self.label)
+
+        # Editable name field
+        self.edit_name = LineEdit2(layer_name)
+        self.edit_name.focus_out_callback = self.focusOutEvent
+        self.edit_name.setToolTip("Edit the layer name (must be unique and file-system compatible).")
+        self.edit_name.hide()  # Initially hidden
+        self.edit_name.returnPressed.connect(self.deactivate_editor)  # Commit name on Enter
+        self.edit_name.editingFinished.connect(self.deactivate_editor)  # Commit name on losing focus
+        self.edit_name.textChanged.connect(self.validate_name)
+        
+        self.layout.addWidget(self.edit_name)
+
+        self.setLayout(self.layout)
+
+    def visible_checkbox_clicked(self, state):
+        visibility = state == Qt.Checked
+        self.layer_data.visible = visibility
+        self.parent_viewer.on_layer_chagned(self.layer_name)
+
+    def get_layer_color_hex(self):
+        """Convert the layer's color (numpy array) to a hex color string."""
+        color = self.layer_data.color
+        return f"rgb({color[0]}, {color[1]}, {color[2]})"
+
+    def open_color_dialog(self, event):
+        """Open a color chooser dialog and update the layer's color."""
+        current_color = QColor(self.layer_data.color[0], self.layer_data.color[1], self.layer_data.color[2])
+        new_color = QColorDialog.getColor(current_color, self, "Select Layer Color")
+
+        if new_color.isValid():
+            # Update layer color
+            self.layer_data.color = np.array([new_color.red(), new_color.green(), new_color.blue()])
+            # Update color patch
+            self.color_patch.setStyleSheet(f"background-color: {self.get_layer_color_hex()}; border: 1px solid black;")
+            # Notify the viewer to update rendering
+            self.parent_viewer.on_layer_chagned(self.layer_name)
+
+    def focusOutEvent(self, event):
+        """Deactivate the editor when it loses focus."""
+        if self.edit_name.isVisible():
+            self.deactivate_editor()
+        super().focusOutEvent(event)
+
+    def activate_editor(self, event):
+        """Activate the name editor (QLineEdit) and hide the label."""
+        self.label.hide()
+        self.edit_name.setText(self.label.text())
+        self.edit_name.show()
+        self.edit_name.setFocus()
+        self.edit_name.selectAll()  # Select all text for easy replacement
+
+    def deactivate_editor(self):
+        """Deactivate the editor, validate the name, and show the label."""
+        new_name = self.edit_name.text()
+        self.validate_name()
+
+        # If valid, update the label and layer name
+        if self.edit_name.toolTip() == "":
+            self.label.setText(new_name)
+            self.layer_name = new_name
+
+        # Show the label and hide the editor
+        self.label.show()
+        self.edit_name.hide()
+
+    def validate_name(self):
+        """Validate the layer name for uniqueness and file system compatibility."""
+        new_name = self.edit_name.text()
+
+        # Check for invalid file system characters
+        invalid_chars = r'<>:"/\|?*'
+        if any(char in new_name for char in invalid_chars) or new_name.strip() == "":
+            self.edit_name.setStyleSheet("background-color: rgb(255, 99, 71);")  # Radish color
+            self.edit_name.setToolTip("Layer name contains invalid characters or is empty.")
+            return
+
+        # Check for uniqueness
+        existing_names = [name for name in self.parent_viewer.segmentation_layers.keys() if name != self.layer_name]
+        if new_name in existing_names:
+            self.edit_name.setStyleSheet("background-color: rgb(255, 99, 71);")  # Radish color
+            self.edit_name.setToolTip("Layer name must be unique.")
+            return
+
+        # Name is valid
+        self.edit_name.setStyleSheet("")  # Reset background
+        self.edit_name.setToolTip("")
+        self.update_layer_name(new_name)
+
+
+    def update_layer_name(self, new_name):
+        """Update the layer name in the viewer."""
+        if new_name != self.layer_name:
+            self.parent_viewer.segmentation_layers[new_name] = self.parent_viewer.segmentation_layers.pop(self.layer_name)
+            self.layer_name = new_name
+
+class CirclePaintBrush:
+    def __init__(self, radius, color, line_thickness) -> None:
+        self.radius = radius
+        self.color = color
+        self.line_thickness = line_thickness
+
+class PaintBrushRenderer:
+    def __init__(self, paintbrush) -> None:
+        self.paintbrush = paintbrush
+
+    def paint_on_mask(self, segmentation, x, y):
+        color = 1
+        cv2.circle(segmentation, (x, y), self.paintbrush.radius, color, -1) # line_thickness of -1 if to fill the mask
+
+    def erase_on_mask(self, segmentation, x, y):
+        color = 0
+        cv2.circle(segmentation, (x, y), self.paintbrush.radius, color, -1) # line_thickness of -1 if to fill the mask
+
+    def render_rgb(self, overlay_rgb, brush_x, brush_y):
+        cv2.circle(overlay_rgb, (brush_x, brush_y), self.paintbrush.radius, self.paintbrush.color, self.paintbrush.line_thickness)
+    
+class SegmentationLayerRenderer():
+    def __init__(self, layers, paintbrush, manager) -> None:
+        self.layers = layers
+        self.manager = manager
+        self.paintbrush = paintbrush
+        
+        self.left_mouse_pressed = False
+
+        self.paintbrush_renderer = PaintBrushRenderer(self.paintbrush)
+
+    def get_graphics_view(self):
+        return self.manager.get_graphics_view()
+        
+    def render_rgb(self, overlay_rgb, image_x=None, image_y=None):
+        # Render each layer if it is visible
+        for layer_name, layer_data in self.layers.items():
+            segmentation = layer_data.segmentation
+            visibility = layer_data.visible
+            color = layer_data.color
+            alpha = layer_data.alpha
+            if segmentation is not None and visibility:
+                mask = segmentation.astype(bool)
+                color_array = np.array(color, dtype=np.float32)
+                overlay_rgb[mask] = (1 - alpha) * overlay_rgb[mask] + alpha * color_array
+        
+        # draw paintbrush if active
+        if (self.manager.brush_active or self.manager.erase_active) and image_x is not None and image_y is not None:  
+            self.paintbrush_renderer.render_rgb(overlay_rgb, image_x, image_y)
+    
+    def get_image_array(self):
+        return self.manager.image_array
+    
+    def point_in_image_boundary(self, x, y):
+        
+        if self.get_image_array() is None:
+            return False
+
+        if 0 <= x < self.get_image_array().shape[1] and 0 <= y < self.get_image_array().shape[0]:
+            return True
+        else:
+            return False
+        
+    def paint_or_erase_on_active_layer(self, event):
+        layer_data = self.manager.get_active_layer_data()
+
+        # Ensure we have a valid active layer
+        if not layer_data:
+            return
+
+        # Get the active segmentation mask
+        segmentation = layer_data.segmentation
+
+        # Map the mouse position to the scene
+        scene_pos = self.get_graphics_view().mapToScene(event.pos())
+        x = int(scene_pos.x())
+        y = int(scene_pos.y())
+
+        # Ensure the coordinates are within the image bounds
+        if self.point_in_image_boundary(x, y):
+            
+            #make sure the brush radius is up to date.
+            self.paintbrush.radius = self.manager.brush_size_slider.value()
+
+            # paint/erase
+            if self.manager.brush_active:
+                self.paintbrush_renderer.paint_on_mask(segmentation, x, y)
+            elif self.manager.erase_active:
+                self.paintbrush_renderer.erase_on_mask(segmentation, x, y)
+            
+            # flag this layer has been modified
+            layer_data.modified = True
+
+            self.manager.get_graphics_view().render_layers()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            
+            self.left_mouse_pressed = True
+
+            if self.manager.brush_active or self.manager.erase_active:
+                self.paint_or_erase_on_active_layer(event)
+            
+    
+    def mouseMoveEvent(self, event):
+        if self.manager.image_array is None:
+            return 
+
+        if self.left_mouse_pressed:
+            if self.manager.brush_active or self.manager.erase_active:
+                self.paint_or_erase_on_active_layer(event)
+
+
+    def mouseReleaseEvent(self, event):
+        if self.manager.image_array is None:
+            return 
+
+        self.left_mouse_pressed = False
+
+class SegmentationListManager:
+    def __init__(self, mainwindow):
+
+        # mainwindow
+        self._mainwindow = mainwindow
+
+        # segmentation data
+        self.image_array = None
+        self.segmentation_layers = {}
+        self.active_layer_name = None
+
+        self.brush_active = False
+        self.erase_active = False
+
+        self.paintbrush = CirclePaintBrush(radius=10, color= (0,255,0), line_thickness= 1)
+
+        # renderers
+        self.renderer = SegmentationLayerRenderer(self.segmentation_layers, self.paintbrush, self)
+        
+
+
+    def load_from_workspace_file(self, workspace_json_path):
+        import json
+        import os
+
+        folder_path = workspace_json_path+".data"
+
+        # Load metadata from 'workspace.json'
+        if not os.path.exists(workspace_json_path):
+            self.print_status("Workspace JSON file not found.")
+            return
+
+        try:
+            with open(workspace_json_path, "r") as f:
+                workspace_data = json.load(f)
+        except json.JSONDecodeError as e:
+            self.print_status(f"Failed to parse workspace.json: {e}")
+            return
+
+        # Clear existing workspace
+        self.segmentation_layers.clear()
+        self.list_widget_for_segmentation_layers.clear()
+
+        # Load segmentation layers
+        for layer_name, layer_metadata in workspace_data.get("segmentation_layers", {}).items():
+            segmentation_path = os.path.join(folder_path, layer_metadata["file"])
+            if os.path.exists(segmentation_path):
+                try:
+                    segmentation_image = sitk.ReadImage(segmentation_path)
+                    segmentation_array = sitk.GetArrayFromImage(segmentation_image)[0]
+
+                    layer_data = SegmentationLayer(
+                        segmentation=segmentation_array,
+                        visible=layer_metadata["visible"],
+                        color=tuple(layer_metadata["color"]),  # Convert to tuple
+                        alpha=layer_metadata["alpha"],
+                    )
+
+                    self.segmentation_layers[layer_name] = layer_data
+
+                    self.add_layer_widget_item(layer_name, layer_data)
+                    
+                except Exception as e:
+                    self.print_status(f"Failed to load segmentation layer {layer_name}: {e}")
+            else:
+                self.print_status(f"Segmentation file for layer {layer_name} not found.")
+
+    def get_mainwindow(self):
+        return self._mainwindow
+
+    def get_graphics_view(self):
+        
+        return self._mainwindow.graphics_view
+
+    def get_status_bar(self):
+        return self._mainwindow.status_bar
+    
+    def print_status(self, msg):
+        if self.get_status_bar() is not None:
+            self.get_status_bar().showMessage(msg)
+
+    def on_layer_chagned(self,layer_name):
+        self.get_graphics_view().update()
+        
+    def init_ui(self):   
+        self.create_paintbrush_toolbar()
+        self.create_layer_manager()
+
+    def create_paintbrush_toolbar(self):
+        
+        mainwindow = self.get_mainwindow()
+
+        # Create a toolbar
+        toolbar = QToolBar("PaintBrush Toolbar",  mainwindow)
+        mainwindow.addToolBar(Qt.TopToolBarArea, toolbar)
+
+        # Add Brush Tool button
+        self.brush_action = QAction("Brush Tool", mainwindow)
+        self.brush_action.setCheckable(True)  # Make it togglable
+        self.brush_action.setChecked(self.brush_active)  # Sync with initial state
+        self.brush_action.triggered.connect(self.toggle_brush_tool)
+        self.brush_action.setIcon(QIcon(brush_icon_path))
+        toolbar.addAction(self.brush_action)
+
+        # Add Erase Tool button
+        self.erase_action = QAction("Erase Tool", mainwindow)
+        self.erase_action.setCheckable(True)
+        self.erase_action.setChecked(self.erase_active)
+        self.erase_action.triggered.connect(self.toggle_erase_tool)
+        self.erase_action.setIcon(QIcon(eraser_icon_path))
+        toolbar.addAction(self.erase_action)
+
+        # paintbrush size slider
+        self.brush_size_slider = LabeledSlider("Brush Size:", initial_value=self.paintbrush.radius)
+        self.brush_size_slider.slider.valueChanged.connect(self.update_brush_size)
+        toolbar.addWidget(self.brush_size_slider)
+
+    def create_layer_manager(self):
+        
+        mainwindow = self.get_mainwindow()
+        
+        # Create a dockable widget
+        dock = QDockWidget("Segmentation Layer Manager ", mainwindow)
+        dock.setAllowedAreas(Qt.RightDockWidgetArea)
+        mainwindow.addDockWidget(Qt.RightDockWidgetArea, dock)
+
+        # Layer manager layout
+        layer_widget = QWidget()
+        layer_layout = QVBoxLayout()
+
+        # Layer list
+        self.list_widget_for_segmentation_layers = QListWidget()
+        self.list_widget_for_segmentation_layers.currentItemChanged.connect(self.layer_list_widget_on_current_item_changed)
+        layer_layout.addWidget(self.list_widget_for_segmentation_layers)
+
+        # Buttons to manage layers
+        button_layout = QHBoxLayout()
+
+        add_layer_button = QPushButton("Add Layer")
+        add_layer_button.clicked.connect(self.add_layer_clicked)
+        button_layout.addWidget(add_layer_button)
+
+        remove_layer_button = QPushButton("Remove Layer")
+        remove_layer_button.clicked.connect(self.remove_layer_clicked)
+        button_layout.addWidget(remove_layer_button)
+
+        # Add the button layout at the top
+        layer_layout.addLayout(button_layout)
+        # Set layout for the layer manager
+        layer_widget.setLayout(layer_layout)
+        dock.setWidget(layer_widget)
+
+    def toggle_brush_tool(self):
+        self.brush_active = not self.brush_active
+        self.erase_active = False  # Disable erase tool when brush is active
+        self.erase_action.setChecked(False)  # Uncheck the erase button
+
+        self.brush_action.setChecked(self.brush_active)
+        if self.brush_active:
+            self.brush_action.setText("Brush Tool (Active)")
+            self.get_status_bar().showMessage("Brush tool activated")
+        else:
+            self.brush_action.setText("Brush Tool (Inactive)")
+            self.get_status_bar().showMessage("Brush tool deactivated")
+
+    def toggle_erase_tool(self):
+        self.erase_active = not self.erase_active
+        self.brush_active = False  # Disable brush tool when erase is active
+        self.brush_action.setChecked(False)  # Uncheck the brush button
+
+        self.erase_action.setChecked(self.erase_active)
+        if self.erase_active:
+            self.erase_action.setText("Erase Tool (Active)")
+            self.print_status("Erase tool activated")
+        else:
+            self.erase_action.setText("Erase Tool (Inactive)")
+            self.print_status("Erase tool deactivated")    
+          
+    def layer_list_widget_on_current_item_changed(self, current, previous):
+        if current:
+            # Retrieve the custom widget associated with the current QListWidgetItem
+            item_widget = self.list_widget_for_segmentation_layers.itemWidget(current)
+            
+            if item_widget and isinstance(item_widget, LayerItemWidget):
+                # Access the layer_name from the custom widget
+                layer_name = item_widget.layer_name
+                if self.active_layer_name != layer_name:
+                    self.active_layer_name = layer_name
+                    self.get_graphics_view().render_layers()
+
+    def generate_unique_layer_name(self, base_name="Layer"):
+        index = 1
+        while f"{base_name} {index}" in self.segmentation_layers:
+            index += 1
+        return f"{base_name} {index}"
+    
+    def add_layer_widget_item(self, layer_name, layer_data):
+
+        # Create a custom widget for the layer
+        layer_item_widget = LayerItemWidget(layer_name, layer_data, self)
+        layer_item = QListWidgetItem(self.list_widget_for_segmentation_layers)
+        layer_item.setSizeHint(layer_item_widget.sizeHint())
+        self.list_widget_for_segmentation_layers.addItem(layer_item)
+        self.list_widget_for_segmentation_layers.setItemWidget(layer_item, layer_item_widget) # This replaces the default text-based display with the custom widget that includes the checkbox and label.
+
+        # set the added as active (do I need to indicate this in the list widget?)
+        self.active_layer_name = layer_name
+    
+    def add_layer_clicked(self):
+
+        # Generate a random bright color for the new layer
+        layer_color = color_rotator.next()
+
+        # add layer data        
+        layer_name = self.generate_unique_layer_name()
+        layer_data = SegmentationLayer(segmentation=np.zeros_like(self.image_array, dtype=np.uint8), color=layer_color)
+        self.segmentation_layers[layer_name] = layer_data
+
+        self.add_layer_widget_item(layer_name, layer_data)
+
+        # render
+        self.get_graphics_view().render_layers()
+
+    def remove_layer_clicked(self):
+        if len(self.list_widget_for_segmentation_layers) == 1:
+                self.print_status("At least 1 layer is required.")
+                return 
+
+        selected_items = self.list_widget_for_segmentation_layers.selectedItems()
+        if not selected_items:
+            return
+
+        for item in selected_items:
+            widget = self.list_widget_for_segmentation_layers.itemWidget(item)
+            layer_name = widget.layer_name
+
+            # Remove from the data list
+            del self.segmentation_layers[layer_name]
+
+            # Remove from the list widget
+            self.list_widget_for_segmentation_layers.takeItem(self.list_widget_for_segmentation_layers.row(item))
+
+        # render
+        self.get_graphics_view().render_layers()
+
+    def update_brush_size(self, value):
+
+        self.paintbrush.radius = value
+
+        if self.image_array is not None:
+            self.get_graphics_view().render_layers()
+
+    def request_view_update(self):
+        pass
+
+    def on_image_loaded(self, sitk_image):
+        
+        self.sitk_image = sitk_image
+
+        image_array = sitk.GetArrayFromImage(sitk_image)[0]
+
+        self.image_array = image_array
+
+        self.add_layer_clicked()
+        
+        self.request_view_update()
+
+    def get_active_layer_data(self):
+        if self.active_layer_name == None:
+            return 
+        
+        layer_data = self.segmentation_layers[self.active_layer_name]
+
+        return layer_data
+
+    def save_segmentation_layer(self, segmentation, file_path):
+
+        # Expand 2D segmentation into 3D (single slice)
+        segmentation_3d = np.expand_dims(segmentation, axis=0)
+        segmentation_image = sitk.GetImageFromArray(segmentation_3d)
+
+        # Copy spatial metadata from the base
+        segmentation_image.CopyInformation(self.sitk_image)
+
+        # Save the segmentation as .mha
+        sitk.WriteImage(segmentation_image, file_path,useCompression=True)
+
+    def save_active_segmentation(self):
+        
+        if self.image_array is None:
+            self.print_to_statusbar("No image loaded. Cannot save segmentation.")
+            return
+    
+        active_layer_name = self.segmentation_list_manager.active_layer_name
+
+        if active_layer_name:
+            file_path, _ = QFileDialog.getSaveFileName(self, "Save Segmentation", "", "MetaImage Files (*.mha *.mhd)")
+            if file_path:
+
+                # Get the active layer's segmentation
+                segmentation = self.segmentation_list_manager.get_active_layer_data().segmentation 
+
+                self.save_segmentation_layer(segmentation, file_path)
+
+                self.print_status(f"Active layer segmentation saved to {file_path}")
+        else:
+            self.print_to_statusbar("No active layer to save.")
+
+
+    def save_state(self,data_dict, data_dir):
+        # Save segmentation layers as '.mha'
+        data_dict["segmentation_layers"] = {}
+
+        for layer_name, layer_data in self.segmentation_layers.items():
+            segmentation_path = os.path.join(data_dir, f"{layer_name}.mha")
+            self.save_segmentation_layer(layer_data.segmentation, segmentation_path)
+
+            # Add layer metadata to the workspace data
+            data_dict["segmentation_layers"][layer_name] = {
+                "file": f"{layer_name}.mha",
+                "visible": layer_data.visible,
+                "color": list(layer_data.color),
+                "alpha": layer_data.alpha,
+            }
+
+    def load_state(self, data_dict, data_dir, aux_data):
+        import json
+        import os
+
+        self.sitk_image = aux_data['base_image']
+
+        # Clear existing workspace
+        self.segmentation_layers.clear()
+        self.list_widget_for_segmentation_layers.clear()
+
+        # Load segmentation layers
+        for layer_name, layer_metadata in data_dict.get("segmentation_layers", {}).items():
+            seg_path = os.path.join(data_dir, layer_metadata["file"])
+            if os.path.exists(seg_path):
+                try:
+                    sitk_seg = sitk.ReadImage(seg_path)
+                    nparray_seg = sitk.GetArrayFromImage(sitk_seg)[0]
+
+                    layer_data = SegmentationLayer(
+                        segmentation=nparray_seg,
+                        visible=layer_metadata["visible"],
+                        color=tuple(layer_metadata["color"]),  # Convert to tuple
+                        alpha=layer_metadata["alpha"],
+                    )
+
+                    self.segmentation_layers[layer_name] = layer_data
+
+                    self.add_layer_widget_item(layer_name, layer_data)
+                    
+                except Exception as e:
+                    self.print_status(f"Failed to load segmentation layer {layer_name}: {e}")
+            else:
+                self.print_status(f"Segmentation file for layer {layer_name} not found.")
+
+
+
+

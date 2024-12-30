@@ -19,6 +19,7 @@ import numpy as np
 from PyQt5.QtWidgets import QWidget, QHBoxLayout, QCheckBox, QLabel, QListWidgetItem, QColorDialog
 from labeled_slider import LabeledSlider
 
+
 class ImageWindowLevelRenderer:
     def __init__(self) -> None:
         pass
@@ -53,6 +54,7 @@ class GraphicsView2D(QGraphicsView):
         self.parent_viewer = parent_viewer  # Reference to the DicomViewer instance
 
         self.setMouseTracking(True)  # Enable mouse tracking
+        self.setInteractive(True) # Enable mouse interaction drgging
         
         self.zoom_factor = 1.0  # Initial zoom level
         self.zoom_step = 0.1  # Amount of zoom per scroll
@@ -183,7 +185,27 @@ class GraphicsView2D(QGraphicsView):
         
         for renderer in self.get_renderers():
             renderer.mouseReleaseEvent(event)
+    
+    
+    def add_ruler(self):
+        from PyQt5.QtCore import QPointF
+        from ruler_widget import RulerWidget
         
+        """Add a ruler widget at the center of the scene."""
+        if self.scene():
+            scene_center = self.sceneRect().center()
+            start = QPointF(scene_center.x() - 50, scene_center.y())
+            end = QPointF(scene_center.x() + 50, scene_center.y())
+            self.ruler_widget = RulerWidget(start, end, self.scene())
+            self.scene().addItem(self.ruler_widget)
+
+    def toggle_ruler(self):
+        """Toggle ruler visibility."""
+        if hasattr(self, "ruler_widget"):
+            self.ruler_widget.setVisible(not self.ruler_widget.isVisible())
+            self.ruler_widget.start_handle.setVisible(self.ruler_widget.isVisible())
+            self.ruler_widget.end_handle.setVisible(self.ruler_widget.isVisible())
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -204,7 +226,7 @@ class MainWindow(QMainWindow):
         self.point_list_manager = PointListManager(self)
         self.point_list_manager.init_ui()
         self.managers.append(self.point_list_manager)
-
+            
     def init_ui(self):
         self.setWindowTitle("Image Labeler 2D")
         self.setGeometry(100, 100, 1024, 786)
@@ -227,6 +249,8 @@ class MainWindow(QMainWindow):
       
         self.create_file_toolbar()
         self.create_view_toolbar()
+
+        self.graphics_view.add_ruler()  # Add a ruler initially
 
         # Add status bar
         self.status_bar = self.statusBar()
@@ -333,6 +357,11 @@ class MainWindow(QMainWindow):
         zoom_reset_action = QAction("Zoom Reset", self)
         zoom_reset_action.triggered.connect(self.zoom_reset_clicked)
         toolbar.addAction(zoom_reset_action)        
+
+        # Add ruler toggle action
+        toggle_ruler_action = QAction("Toggle Ruler", self)
+        toggle_ruler_action.triggered.connect(self.graphics_view.toggle_ruler)
+        toolbar.addAction(toggle_ruler_action)
 
     def zoom_in_clicked(self):
         if self.image_array is not None:
