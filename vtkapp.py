@@ -61,13 +61,13 @@ class Panning:
         self.enabled = enabled
 
         if enabled:
-            self.interactor.AddObserver("LeftButtonPressEvent", self.on_left_button_press)
-            self.interactor.AddObserver("MouseMoveEvent", self.on_mouse_move)
-            self.interactor.AddObserver("LeftButtonReleaseEvent", self.on_left_button_release)
+            self.left_button_press_observer = self.interactor.AddObserver("LeftButtonPressEvent", self.on_left_button_press)
+            self.mouse_move_observer = self.interactor.AddObserver("MouseMoveEvent", self.on_mouse_move)
+            self.left_button_release_observer = self.interactor.AddObserver("LeftButtonReleaseEvent", self.on_left_button_release)
         else:    
-            self.interactor.RemoveObserver("LeftButtonPressEvent", self.on_left_button_press)
-            self.interactor.RemoveObserver("MouseMoveEvent", self.on_mouse_move)
-            self.interactor.RemoveObserver("LeftButtonReleaseEvent", self.on_left_button_release)    
+            self.interactor.RemoveObserver(self.left_button_press_observer)
+            self.interactor.RemoveObserver(self.mouse_move_observer)
+            self.interactor.RemoveObserver(self.left_button_release_observer)   
             self.last_mouse_position = None
 
         if enabled:
@@ -147,7 +147,58 @@ class Panning:
         # Update the last mouse position
         self.last_mouse_position = current_mouse_position
         
+
+class Zooming:
+    def __init__(self, viewer=None):
+        self.viewer = viewer
+        self.interactor = viewer.interactor
+        self.enabled = False
+        self.zoom_in_factor = 1.2
+        self.zoom_out_factor = 0.8
+
+    def enable(self, enabled=True):
+        self.enabled = enabled
+
+        if enabled:
+            self.mouse_wheel_forward_observer = self.interactor.AddObserver("MouseWheelForwardEvent", self.on_mouse_wheel_forward)
+            self.on_mouse_wheel_backward_observer = self.interactor.AddObserver("MouseWheelBackwardEvent", self.on_mouse_wheel_backward)
+        else:    
+            self.interactor.RemoveObserver(self.mouse_wheel_forward_observer)
+            self.interactor.RemoveObserver(self.on_mouse_wheel_backward_observer)   
+
+        print(f"Zooming mode: {'enabled' if enabled else 'disabled'}")
+    
+    def on_mouse_wheel_forward(self, obj, event):
+        if not self.enabled:
+            return
+
+        self.zoom_in()        
+
+        self.viewer.render_window.Render()
+
+    def on_mouse_wheel_backward(self, obj, event):
+        if not self.enabled:
+            return
+
+        self.zoom_out()
+
+        self.viewer.render_window.Render()
+
+    def zoom_in(self):
+        """Zoom in the camera."""
+        camera = self.viewer.get_renderer().GetActiveCamera()
+        camera.Zoom(self.zoom_in_factor)  
         
+        self.viewer.get_render_window().Render()
+
+    def zoom_out(self):
+        """Zoom out the camera."""
+        camera = self.viewer.get_renderer().GetActiveCamera()
+        camera.Zoom(self.zoom_out_factor)  
+        
+        self.viewer.get_render_window().Render()
+
+
 class VTKViewer(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -247,10 +298,14 @@ class VTKViewer(QWidget):
         self.interactor.AddObserver("MouseMoveEvent", self.on_mouse_move)
 
         self.rulers = []
-        self.panning = Panning(viewer=self)  # State to track panning mode
+        self.zooming = Zooming(viewer=self)
+        self.panning = Panning(viewer=self)  
 
     def get_renderer(self):
         return self.base_renderer
+    
+    def get_render_window(self):
+        return self.render_window
     
     def get_camera_info(self):
         """Retrieve the camera's position and direction in the world coordinate system."""
@@ -398,7 +453,7 @@ class VTKViewer(QWidget):
         else:
             self.brush_actor.SetVisibility(False)  # Hide the brush when not painting
 
-        #self.panning.on_mouse_move(obj, event)
+        
 
         self.render_window.Render()
 
@@ -406,14 +461,12 @@ class VTKViewer(QWidget):
         self.left_button_is_pressed = True
         if self.painting_enabled and self.active_segmentation:
             self.paint_at_mouse_position()
-
-        # for panning
-        #self.planning.on_left_button_press(obj, event)
+       
 
     def on_left_button_release(self, obj, event):
         self.left_button_is_pressed = False
         
-        #self.panning.on_left_button_release(obj, event)
+        
         return
     
     def update_circle_geometry(self, radius):
@@ -662,6 +715,9 @@ class VTKViewer(QWidget):
         """Enable or disable panning mode."""
         self.panning.enable(enabled)
 
+    def toggle_zooming_mode(self, enabled):
+        """Enable or disable panning mode."""
+        self.zooming.enable(enabled)
         
     
     def paint_at_mouse_position(self):
@@ -963,27 +1019,28 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.vtk_viewer)
 
 
-
-
-
         # Segmentation Manager
         self.segmentation_manager = SegmentationListManager(self.vtk_viewer, self)
         layout.addWidget(self.segmentation_manager)
 
-
-
         # Zoom Buttons
         zoom_layout = QVBoxLayout()
         zoom_in_button = QPushButton("Zoom In")
-        zoom_in_button.clicked.connect(self.zoom_in)
+        zoom_in_button.clicked.connect(self.vtk_viewer.zooming.zoom_in)
         zoom_layout.addWidget(zoom_in_button)
 
         zoom_out_button = QPushButton("Zoom Out")
-        zoom_out_button.clicked.connect(self.zoom_out)
+        zoom_out_button.clicked.connect(self.vtk_viewer.zooming.zoom_out)
         zoom_layout.addWidget(zoom_out_button)
 
+        # Add Zooming Button
+        zoom_button = QPushButton("Zoom")
+        zoom_button.setCheckable(True)
+        zoom_button.toggled.connect(self.vtk_viewer.toggle_zooming_mode)
+        zoom_layout.addWidget(zoom_button)
+
         # Add Panning Button
-        panning_button = QPushButton("Activate Panning")
+        panning_button = QPushButton("Panning")
         panning_button.setCheckable(True)
         panning_button.toggled.connect(self.vtk_viewer.toggle_panning_mode)
         zoom_layout.addWidget(panning_button)
@@ -1033,24 +1090,7 @@ class MainWindow(QMainWindow):
     def open_pyvista_window(self):
         open_pyvista_window(self.vtk_viewer)
 
-    def zoom_in(self):
-        """Zoom in the camera."""
-        camera = self.vtk_viewer.base_renderer.GetActiveCamera()
-        camera.Zoom(1.2)  # Zoom in by 20%
-        self.vtk_viewer.render_window.Render()
-
-        self.vtk_viewer.get_camera_info()
-        self.vtk_viewer.print_camera_viewport_info()
-        
-
-    def zoom_out(self):
-        """Zoom out the camera."""
-        camera = self.vtk_viewer.base_renderer.GetActiveCamera()
-        camera.Zoom(0.8)  # Zoom out by 20%
-        self.vtk_viewer.render_window.Render()
-
-        self.vtk_viewer.get_camera_info()
-        self.vtk_viewer.print_camera_viewport_info()
+    
         
 
 if __name__ == "__main__":
