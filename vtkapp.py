@@ -3,9 +3,77 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QSl
 from PyQt5.QtCore import Qt
 from vtk.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 
-class CircleBrush:
-    def __init__(self, radius=5):
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, 
+    QFileDialog, QVBoxLayout, QSlider, QPushButton, QLabel, QWidget, QMenuBar, QAction, QToolBar, QDockWidget, QListWidget, QHBoxLayout, QPushButton, QCheckBox, QLineEdit
+)
+from PyQt5.QtWidgets import QWidget, QHBoxLayout, QCheckBox, QLabel, QListWidgetItem, QColorDialog
+from PyQt5.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QIcon
+
+class PaintBrush:
+    def __init__(self, radius=20, color= (0,255,0), line_thickness= 1):
         self.radius = radius
+
+        # Paintbrush setup
+        self.active_segmentation = None  # Reference to the active segmentation
+        self.enabled = False
+
+        # Brush actor for visualization
+        self.brush_actor = vtk.vtkActor()
+        self.brush_actor.SetVisibility(False)  # Initially hidden
+
+        # Create a green brush representation
+        # Create a 2D circle for brush visualization
+        self.brush_source = vtk.vtkPolyData()
+        self.circle_points = vtk.vtkPoints()
+        self.circle_lines = vtk.vtkCellArray()
+
+
+        self.brush_source.SetPoints(self.circle_points)
+        self.brush_source.SetLines(self.circle_lines)
+        self.brush_mapper = vtk.vtkPolyDataMapper()
+        self.brush_mapper.SetInputData(self.brush_source)
+        self.brush_actor.SetMapper(self.brush_mapper)
+        self.brush_actor.GetProperty().SetColor(color[0], color[1], color[2])  
+
+        self.set_radius(radius)
+    def get_actor(self):
+        return self.brush_actor
+    
+    def set_radius(self, radius):
+        self.radius = radius
+        self.update_circle_geometry(radius)
+
+    def update_circle_geometry(self, radius):
+        """Update the circle geometry to reflect the current radius."""
+        self.circle_points.Reset()
+        self.circle_lines.Reset()
+
+        num_segments = 50  # Number of segments for the circle
+        for i in range(num_segments):
+            angle = 2.0 * math.pi * i / num_segments
+            x = radius * math.cos(angle)
+            y = radius * math.sin(angle)
+            self.circle_points.InsertNextPoint(x, y, 0)
+
+            # Connect the points to form a circle
+            if i > 0:
+                line = vtk.vtkLine()
+                line.GetPointIds().SetId(0, i - 1)
+                line.GetPointIds().SetId(1, i)
+                self.circle_lines.InsertNextCell(line)
+
+        # Close the circle
+        line = vtk.vtkLine()
+        line.GetPointIds().SetId(0, num_segments - 1)
+        line.GetPointIds().SetId(1, 0)
+        self.circle_lines.InsertNextCell(line)
+
+        # Notify VTK that the geometry has been updated
+        self.circle_points.Modified()
+        self.circle_lines.Modified()
+        self.brush_source.Modified()
+
 
     def paint(self, segmentation, x, y, value=1):
         """Draw a circle on the segmentation at (x, y) with the given radius."""
@@ -24,30 +92,7 @@ class CircleBrush:
 
 import math
 
-'''
-class CustomInteractorStyle(vtk.vtkInteractorStyleImage):
-    def __init__(self, parent=None):
-        super().__init__()
-        self.parent = parent
-        self.left_button_is_pressed = False
 
-    def OnMouseMove(self):
-        if self.left_button_is_pressed and self.parent:
-            self.parent.on_mouse_move(None, "MouseMoveEvent")
-        super().OnMouseMove()
-
-    def OnLeftButtonDown(self):
-        self.left_button_is_pressed = True
-        if self.parent:
-            self.parent.on_left_button_press(None, "LeftButtonPressEvent")
-        super().OnLeftButtonDown()
-
-    def OnLeftButtonUp(self):
-        self.left_button_is_pressed = False
-        if self.parent:
-            self.parent.on_left_button_release(None, "LeftButtonReleaseEvent")
-        super().OnLeftButtonUp()
-'''
 class Panning:
     def __init__(self, viewer=None):
         self.viewer = viewer
@@ -197,6 +242,23 @@ class Zooming:
         
         self.viewer.get_render_window().Render()
 
+    def zoom_reset(self):
+        # Get the active camera
+        camera = self.viewer.get_renderer().GetActiveCamera()
+
+        if camera.GetParallelProjection():
+            # Reset parallel projection scale
+            self.viewer.get_renderer().ResetCamera()
+        else:
+            # Reset perspective projection parameters
+            camera.SetPosition(0.0, 0.0, 1000.0)
+            camera.SetFocalPoint(0.0, 0.0, 0.0)
+            camera.SetViewUp(0.0, 1.0, 0.0)
+            self.viewer.get_renderer().ResetCameraClippingRange()
+
+        # Render the updated scene
+        self.viewer.get_render_window().Render()
+
 
 class VTKViewer(QWidget):
     def __init__(self, parent=None):
@@ -231,29 +293,6 @@ class VTKViewer(QWidget):
         # Layout for embedding the VTK widget
         layout = QVBoxLayout()
         layout.addWidget(self.vtk_widget)
-
-        # Add sliders for window and level adjustments
-        slider_layout = QHBoxLayout()
-
-        self.window_slider = QSlider(Qt.Horizontal)
-        self.window_slider.setMinimum(1)
-        self.window_slider.setMaximum(2000)
-        self.window_slider.setValue(400)
-        self.window_slider.setTickInterval(100)
-        self.window_slider.valueChanged.connect(self.update_window_level)
-        slider_layout.addWidget(QLabel("Window:"))
-        slider_layout.addWidget(self.window_slider)
-
-        self.level_slider = QSlider(Qt.Horizontal)
-        self.level_slider.setMinimum(-1000)
-        self.level_slider.setMaximum(1000)
-        self.level_slider.setValue(40)
-        self.level_slider.setTickInterval(100)
-        self.level_slider.valueChanged.connect(self.update_window_level)
-        slider_layout.addWidget(QLabel("Level:"))
-        slider_layout.addWidget(self.level_slider)
-
-        layout.addLayout(slider_layout)
         self.setLayout(layout)
 
         # VTK pipeline for image
@@ -261,35 +300,6 @@ class VTKViewer(QWidget):
         self.window_level_filter = vtk.vtkImageMapToWindowLevelColors()
         self.window_level_filter.SetOutputFormatToRGB()
         self.base_renderer.AddActor(self.image_actor)
-
-        # Paintbrush setup
-        self.brush = CircleBrush(radius=20)
-        self.active_segmentation = None  # Reference to the active segmentation
-        self.painting_enabled = False
-
-        # Brush actor for visualization
-        self.brush_actor = vtk.vtkActor()
-        self.brush_actor.SetVisibility(False)  # Initially hidden
-            
-        self.base_renderer.AddActor(self.brush_actor)
-
-        # Create a green brush representation
-        # Create a 2D circle for brush visualization
-        self.brush_source = vtk.vtkPolyData()
-        self.circle_points = vtk.vtkPoints()
-        self.circle_lines = vtk.vtkCellArray()
-
-        # Initialize the circle geometry
-        self.update_circle_geometry(self.brush.radius)
-
-        self.brush_source.SetPoints(self.circle_points)
-        self.brush_source.SetLines(self.circle_lines)
-
-        # Brush mapper and actor
-        brush_mapper = vtk.vtkPolyDataMapper()
-        brush_mapper.SetInputData(self.brush_source)
-        self.brush_actor.SetMapper(brush_mapper)
-        self.brush_actor.GetProperty().SetColor(0, 1, 0)  # Green color
 
         # Connect mouse events
         self.interactor.AddObserver("LeftButtonPressEvent", self.on_left_button_press)
@@ -363,7 +373,6 @@ class VTKViewer(QWidget):
         print(f"Clipping Range: {clipping_range}")
 
 
-
     def add_ruler(self):
         """Add a ruler to the center of the current view and enable interaction."""
         camera = self.base_renderer.GetActiveCamera()
@@ -416,7 +425,7 @@ class VTKViewer(QWidget):
         distance = ((point2[0] - point1[0]) ** 2 +
                     (point2[1] - point1[1]) ** 2 +
                     (point2[2] - point1[2]) ** 2) ** 0.5
-        spacing = self.image_data.GetSpacing()
+        spacing = self.vtk_image.GetSpacing()
         physical_distance = distance * spacing[0]  # Assuming uniform spacing
 
         print(f"Ruler Distance: {physical_distance:.2f} mm")
@@ -431,26 +440,7 @@ class VTKViewer(QWidget):
         # Render the updates
         self.render_window.Render()
         
-    def on_mouse_move(self, obj, event):
-        """Update brush position and optionally paint."""
-        if self.painting_enabled:
-            mouse_pos = self.interactor.GetEventPosition()
-            picker = vtk.vtkWorldPointPicker()
-            picker.Pick(mouse_pos[0], mouse_pos[1], 0, self.base_renderer)
-
-            # Get world position
-            world_pos = picker.GetPickPosition()
-
-            # Update the brush position (ensure Z remains on the image plane + 0.1 to show on top of the image)
-            self.brush_actor.SetPosition(world_pos[0], world_pos[1], world_pos[2] + 0.1)
-            self.brush_actor.SetVisibility(True)  # Make the brush visible
-
-            # Paint 
-            if self.left_button_is_pressed and self.active_segmentation:
-                print('paint...')
-                self.paint_at_mouse_position()
-        else:
-            self.brush_actor.SetVisibility(False)  # Hide the brush when not painting
+    
 
         
 
@@ -458,52 +448,30 @@ class VTKViewer(QWidget):
 
     def on_left_button_press(self, obj, event):
         self.left_button_is_pressed = True
-        if self.painting_enabled and self.active_segmentation:
-            self.paint_at_mouse_position()
+
        
+
+    def on_mouse_move(self, obj, event):
+        """Update brush position and optionally paint."""
+        
+
+        
+
+        self.render_window.Render()
+
 
     def on_left_button_release(self, obj, event):
         self.left_button_is_pressed = False
         
         
-        return
+
     
-    def update_circle_geometry(self, radius):
-        """Update the circle geometry to reflect the current radius."""
-        self.circle_points.Reset()
-        self.circle_lines.Reset()
-
-        num_segments = 50  # Number of segments for the circle
-        for i in range(num_segments):
-            angle = 2.0 * math.pi * i / num_segments
-            x = radius * math.cos(angle)
-            y = radius * math.sin(angle)
-            self.circle_points.InsertNextPoint(x, y, 0)
-
-            # Connect the points to form a circle
-            if i > 0:
-                line = vtk.vtkLine()
-                line.GetPointIds().SetId(0, i - 1)
-                line.GetPointIds().SetId(1, i)
-                self.circle_lines.InsertNextCell(line)
-
-        # Close the circle
-        line = vtk.vtkLine()
-        line.GetPointIds().SetId(0, num_segments - 1)
-        line.GetPointIds().SetId(1, 0)
-        self.circle_lines.InsertNextCell(line)
-
-        # Notify VTK that the geometry has been updated
-        self.circle_points.Modified()
-        self.circle_lines.Modified()
-        self.brush_source.Modified()
-
 
     def center_image(self):
         
-        dims = self.image_data.GetDimensions()
-        spacing = self.image_data.GetSpacing()
-        original_origin = self.image_data.GetOrigin()
+        dims = self.vtk_image.GetDimensions()
+        spacing = self.vtk_image.GetSpacing()
+        original_origin = self.vtk_image.GetOrigin()
 
         # Calculate the center of the image in world coordinates
         center = [
@@ -518,95 +486,11 @@ class VTKViewer(QWidget):
             original_origin[1] - center[1],
             0.0,
         ]
-        self.image_data.SetOrigin(new_origin)
+        self.vtk_image.SetOrigin(new_origin)
         
         print('new_origin: ', new_origin)
 
         self.image_original_origin = original_origin
-
-
-    def load_dicom(self, dicom_path):
-        
-        # Use VTK DICOM Reader
-        reader = vtk.vtkDICOMImageReader()
-        reader.SetFileName(dicom_path)
-        reader.Update()
-
-        # Check if the output is valid
-        if not reader.GetOutput():
-            print("Error: Could not read DICOM file.")
-            return
-
-        self.image_data = reader.GetOutput()
-
-        # Extract correct spacing for RTImage using pydicom
-        import pydicom
-        dicom_dataset = pydicom.dcmread(dicom_path)
-        if dicom_dataset.Modality == "RTIMAGE":
-            # Extract necessary tags
-            if hasattr(dicom_dataset, "ImagePlanePixelSpacing"):
-                pixel_spacing = dicom_dataset.ImagePlanePixelSpacing  # [row spacing, column spacing]
-            else:
-                raise ValueError("RTImage is missing ImagePlanePixelSpacing")
-
-            if hasattr(dicom_dataset, "RadiationMachineSAD"):
-                SAD = float(dicom_dataset.RadiationMachineSAD)
-            else:
-                raise ValueError("RTImage is missing RadiationMachineSAD")
-
-            if hasattr(dicom_dataset, "RTImageSID"):
-                SID = float(dicom_dataset.RTImageSID)
-            else:
-                raise ValueError("RTImage is missing RTImageSID")
-
-            # Scale pixel spacing to SAD scale
-            scaling_factor = SAD / SID
-            scaled_spacing = [spacing * scaling_factor for spacing in pixel_spacing]
-
-            # Update spacing in vtkImageData
-            self.image_data.SetSpacing(scaled_spacing[1], scaled_spacing[0], 1.0)  # Column, Row, Depth
-            
-            # Print the updated spacing
-            print(f"Updated Spacing: {self.image_data.GetSpacing()}")
-
-        # align the center of the image to the center of the world coordiante system
-        # Get image properties
-        dims = self.image_data.GetDimensions()
-        spacing = self.image_data.GetSpacing()
-        original_origin = self.image_data.GetOrigin()
-
-        print('dims: ', dims)
-        print('spacing: ', spacing)
-        print('original_origin: ', original_origin)
-
-        # Get the scalar range (pixel intensity range)
-        scalar_range = reader.GetOutput().GetScalarRange()
-        min_intensity, max_intensity = scalar_range
-
-        # Dynamically adjust sliders based on intensity range
-        self.window_slider.setMinimum(1)
-        self.window_slider.setMaximum(int(max_intensity - min_intensity))
-        self.window_slider.setValue(int((max_intensity - min_intensity) / 2))  # Default to half of the range
-
-        self.level_slider.setMinimum(int(min_intensity))
-        self.level_slider.setMaximum(int(max_intensity))
-        self.level_slider.setValue(int((max_intensity + min_intensity) / 2))  # Default to the center of the range
-
-        # Connect reader to window/level filter
-        self.window_level_filter.SetInputConnection(reader.GetOutputPort())
-        self.window_level_filter.SetWindow(self.window_slider.value())
-        self.window_level_filter.SetLevel(self.level_slider.value())
-        self.window_level_filter.Update()
-
-        # Set the filter output to the actor
-        self.image_actor.GetMapper().SetInputConnection(self.window_level_filter.GetOutputPort())
-        self.base_renderer.ResetCamera()
-
-        self.render_window.Render()
-
-        #self.reset_camera_parameters()
-        self.get_camera_info()
-        self.print_camera_viewport_info()
 
 
     def print_properties(self):
@@ -622,10 +506,10 @@ class VTKViewer(QWidget):
         print()
 
         # Image properties
-        if self.image_data:
-            dims = self.image_data.GetDimensions()
-            spacing = self.image_data.GetSpacing()
-            origin = self.image_data.GetOrigin()
+        if self.vtk_image:
+            dims = self.vtk_image.GetDimensions()
+            spacing = self.vtk_image.GetSpacing()
+            origin = self.vtk_image.GetOrigin()
             print("Image Properties:")
             print(f"  Dimensions: {dims}")
             print(f"  Spacing: {spacing}")
@@ -648,14 +532,14 @@ class VTKViewer(QWidget):
 
     def reset_camera_parameters(self):
         """Align the camera viewport center to the center of the loaded image."""
-        if self.image_data is None:
+        if self.vtk_image is None:
             print("No image data loaded.")
             return
 
         # Get the image center
-        dims = self.image_data.GetDimensions()
-        spacing = self.image_data.GetSpacing()
-        origin = self.image_data.GetOrigin()
+        dims = self.vtk_image.GetDimensions()
+        spacing = self.vtk_image.GetSpacing()
+        origin = self.vtk_image.GetOrigin()
 
         # Calculate the center of the image in world coordinates
         image_center = [
@@ -710,13 +594,13 @@ class VTKViewer(QWidget):
         """Set the currently active segmentation layer."""
         self.active_segmentation = segmentation
 
-    def toggle_panning_mode(self, enabled):
+    def toggle_panning_mode(self):
         """Enable or disable panning mode."""
-        self.panning.enable(enabled)
+        self.panning.enable(not self.panning.enabled)
 
-    def toggle_zooming_mode(self, enabled):
+    def toggle_zooming_mode(self):
         """Enable or disable panning mode."""
-        self.zooming.enable(enabled)
+        self.zooming.enable(not self.zooming.enabled)
         
     
     def paint_at_mouse_position(self):
@@ -725,9 +609,9 @@ class VTKViewer(QWidget):
         picker.Pick(mouse_pos[0], mouse_pos[1], 0, self.base_renderer)
         world_pos = picker.GetPickPosition()
 
-        dims = self.image_data.GetDimensions()
-        spacing = self.image_data.GetSpacing()
-        origin = self.image_data.GetOrigin()
+        dims = self.vtk_image.GetDimensions()
+        spacing = self.vtk_image.GetSpacing()
+        origin = self.vtk_image.GetOrigin()
 
         x = int((world_pos[0] - origin[0]) / spacing[0])
         y = int((world_pos[1] - origin[1]) / spacing[1])
@@ -744,14 +628,179 @@ class VTKViewer(QWidget):
 
 
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QListWidget, QPushButton, QHBoxLayout
+import os
 
-class SegmentationListManager(QWidget):
-    def __init__(self, vtk_viewer                 , parent=None):
-        super().__init__(parent)
+# Construct paths to the icons
+current_dir = os.path.dirname(__file__)
+brush_icon_path = os.path.join(current_dir, "icons", "brush.png")
+eraser_icon_path = os.path.join(current_dir, "icons", "eraser.png")
+reset_zoom_icon_path = os.path.join(current_dir, "icons", "reset_zoom.png")
+
+from color_rotator import ColorRotator
+
+color_rotator = ColorRotator()
+
+import numpy as np
+
+class SegmentationLayer:
+    def __init__(self, segmentation, visible=True, color=np.array([255, 255, 128]), alpha=0.5, actor=None) -> None:
+        self.segmentation = segmentation
+        self.visible = visible
+        self.color = color
+        self.alpha = alpha
+        self.actor = actor
+        self.modified = False
+
+from line_edit2 import LineEdit2
+
+class LayerItemWidget(QWidget):
+    def __init__(self, layer_name, layer_data, parent_viewer):
+        super().__init__()
+        self.parent_viewer = parent_viewer
+        self.layer_name = layer_name
+        self.layer_data = layer_data
+
+        self.layout = QHBoxLayout()
+        self.layout.setContentsMargins(0, 0, 0, 0)
+
+        # Checkbox for visibility
+        self.checkbox = QCheckBox()
+        self.checkbox.setChecked(True)
+        self.checkbox.stateChanged.connect(self.visible_checkbox_clicked)
+        self.layout.addWidget(self.checkbox)
+
+        # Color patch for layer
+        self.color_patch = QLabel()
+        self.color_patch.setFixedSize(16, 16)  # Small square
+        self.color_patch.setStyleSheet(f"background-color: {self.get_layer_color_hex()}; border: 1px solid black;")
+        self.color_patch.setCursor(Qt.PointingHandCursor)
+        self.color_patch.mousePressEvent = self.open_color_dialog  # Assign event for color change
+        self.layout.addWidget(self.color_patch)
+
+        # Label for the layer name
+        self.label = QLabel(layer_name)
+        self.label.setCursor(Qt.PointingHandCursor)
+        self.label.mouseDoubleClickEvent = self.activate_editor  # Assign double-click to activate editor
+        self.layout.addWidget(self.label)
+
+        # Editable name field
+        self.edit_name = LineEdit2(layer_name)
+        self.edit_name.focus_out_callback = self.focusOutEvent
+        self.edit_name.setToolTip("Edit the layer name (must be unique and file-system compatible).")
+        self.edit_name.hide()  # Initially hidden
+        self.edit_name.returnPressed.connect(self.deactivate_editor)  # Commit name on Enter
+        self.edit_name.editingFinished.connect(self.deactivate_editor)  # Commit name on losing focus
+        self.edit_name.textChanged.connect(self.validate_name)
+        
+        self.layout.addWidget(self.edit_name)
+
+        self.setLayout(self.layout)
+
+    def visible_checkbox_clicked(self, state):
+        visibility = state == Qt.Checked
+        self.layer_data.visible = visibility
+        self.parent_viewer.on_layer_chagned(self.layer_name)
+
+    def get_layer_color_hex(self):
+        """Convert the layer's color (numpy array) to a hex color string."""
+        color = self.layer_data.color
+        return f"rgb({color[0]}, {color[1]}, {color[2]})"
+
+    def open_color_dialog(self, event):
+        """Open a color chooser dialog and update the layer's color."""
+        current_color = QColor(self.layer_data.color[0], self.layer_data.color[1], self.layer_data.color[2])
+        new_color = QColorDialog.getColor(current_color, self, "Select Layer Color")
+
+        if new_color.isValid():
+            # Update layer color
+            self.layer_data.color = np.array([new_color.red(), new_color.green(), new_color.blue()])
+            # Update color patch
+            self.color_patch.setStyleSheet(f"background-color: {self.get_layer_color_hex()}; border: 1px solid black;")
+            # Notify the viewer to update rendering
+            self.parent_viewer.on_layer_chagned(self.layer_name)
+
+    def focusOutEvent(self, event):
+        """Deactivate the editor when it loses focus."""
+        if self.edit_name.isVisible():
+            self.deactivate_editor()
+        super().focusOutEvent(event)
+
+    def activate_editor(self, event):
+        """Activate the name editor (QLineEdit) and hide the label."""
+        self.label.hide()
+        self.edit_name.setText(self.label.text())
+        self.edit_name.show()
+        self.edit_name.setFocus()
+        self.edit_name.selectAll()  # Select all text for easy replacement
+
+    def deactivate_editor(self):
+        """Deactivate the editor, validate the name, and show the label."""
+        new_name = self.edit_name.text()
+        self.validate_name()
+
+        # If valid, update the label and layer name
+        if self.edit_name.toolTip() == "":
+            self.label.setText(new_name)
+            self.layer_name = new_name
+
+        # Show the label and hide the editor
+        self.label.show()
+        self.edit_name.hide()
+
+    def validate_name(self):
+        """Validate the layer name for uniqueness and file system compatibility."""
+        new_name = self.edit_name.text()
+
+        # Check for invalid file system characters
+        invalid_chars = r'<>:"/\|?*'
+        if any(char in new_name for char in invalid_chars) or new_name.strip() == "":
+            self.edit_name.setStyleSheet("background-color: rgb(255, 99, 71);")  # Radish color
+            self.edit_name.setToolTip("Layer name contains invalid characters or is empty.")
+            return
+
+        # Check for uniqueness
+        existing_names = [name for name in self.parent_viewer.segmentation_layers.keys() if name != self.layer_name]
+        if new_name in existing_names:
+            self.edit_name.setStyleSheet("background-color: rgb(255, 99, 71);")  # Radish color
+            self.edit_name.setToolTip("Layer name must be unique.")
+            return
+
+        # Name is valid
+        self.edit_name.setStyleSheet("")  # Reset background
+        self.edit_name.setToolTip("")
+        self.update_layer_name(new_name)
+
+
+    def update_layer_name(self, new_name):
+        """Update the layer name in the viewer."""
+        if new_name != self.layer_name:
+            self.parent_viewer.segmentation_layers[new_name] = self.parent_viewer.segmentation_layers.pop(self.layer_name)
+            self.layer_name = new_name
+
+
+class SegmentationListManager():
+    def __init__(self, vtk_viewer, mainwindow=None):
+        
         self.vtk_viewer = vtk_viewer
-        self.vtk_renderer = vtk_viewer.base_renderer  # Reference to the VTK renderer
-        self.segments = {}  # Dictionary to store segmentation layers {name: vtkImageData}
+        self.vtk_renderer = vtk_viewer.get_renderer()
         self.active_layer_name = None
+
+        # mainwindow
+        self._mainwindow = mainwindow
+
+        # segmentation data
+        self.segmentation_layers = {}
+        self.active_layer_name = None
+
+        self.brush_active = False
+        self.erase_active = False
+
+        self.paintbrush = PaintBrush(radius=10, color= (0,255,0), line_thickness= 1)
+        self.get_mainwindow().vtk_viewer.get_renderer().AddActor(self.paintbrush.get_actor())
+
+        # renderers
+        #self.renderer = SegmentationLayerRenderer(self.segmentation_layers, self.paintbrush, self)
+        
 
         # UI Components
         self.layout = QVBoxLayout()
@@ -784,7 +833,258 @@ class SegmentationListManager(QWidget):
         self.paintbrush_button.toggled.connect(self.vtk_viewer.toggle_paintbrush)
         self.layout.addWidget(self.paintbrush_button)
 
-        self.setLayout(self.layout)
+        
+
+
+    def init_ui(self):   
+        self.create_paintbrush_toolbar()
+        self.create_layer_manager()
+
+
+    def enable_paintbrush(self, enabled=True):
+        
+        self.paintbrush.enabled = enabled
+
+        if enabled:
+            self.left_button_press_observer = self.interactor.AddObserver("LeftButtonPressEvent", self.on_left_button_press)
+            self.mouse_move_observer = self.interactor.AddObserver("MouseMoveEvent", self.on_mouse_move)
+            self.left_button_release_observer = self.interactor.AddObserver("LeftButtonReleaseEvent", self.on_left_button_release)
+        else:    
+            self.interactor.RemoveObserver(self.left_button_press_observer)
+            self.interactor.RemoveObserver(self.mouse_move_observer)
+            self.interactor.RemoveObserver(self.left_button_release_observer)   
+            self.last_mouse_position = None
+        
+        print(f"Painbrush mode: {'enabled' if enabled else 'disabled'}")
+
+    def on_left_button_press(self, obj, event):
+        if not self.enabled:
+            return
+        
+        self.left_button_is_pressed = True
+        self.last_mouse_position = self.interactor.GetEventPosition()
+        
+        if self.enabled and self.active_segmentation:
+            self.paint_at_mouse_position()
+        
+
+    def on_mouse_move(self, obj, event):
+        if not self.enabled:
+            return
+
+        if self.painting_enabled:
+            mouse_pos = self.interactor.GetEventPosition()
+            picker = vtk.vtkWorldPointPicker()
+            picker.Pick(mouse_pos[0], mouse_pos[1], 0, self.base_renderer)
+
+            # Get world position
+            world_pos = picker.GetPickPosition()
+
+            # Update the brush position (ensure Z remains on the image plane + 0.1 to show on top of the image)
+            self.brush_actor.SetPosition(world_pos[0], world_pos[1], world_pos[2] + 0.1)
+            self.brush_actor.SetVisibility(True)  # Make the brush visible
+
+            # Paint 
+            if self.left_button_is_pressed and self.active_segmentation:
+                print('paint...')
+                self.paint_at_mouse_position()
+        else:
+            self.brush_actor.SetVisibility(False)  # Hide the brush when not painting
+       
+
+    def on_left_button_release(self, obj, event):
+        if not self.enabled:
+            return
+        
+        self.left_button_is_pressed = False
+        self.last_mouse_position = None
+
+
+    def get_mainwindow(self):
+        return self._mainwindow
+    def create_paintbrush_toolbar(self):
+        
+        from PyQt5.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QIcon
+        from labeled_slider import LabeledSlider
+
+        mainwindow = self.get_mainwindow()
+
+        # Create a toolbar
+        toolbar = QToolBar("PaintBrush Toolbar",  mainwindow)
+        mainwindow.addToolBar(Qt.TopToolBarArea, toolbar)
+
+        # Add Brush Tool button
+        self.brush_action = QAction("Brush Tool", mainwindow)
+        self.brush_action.setCheckable(True)  # Make it togglable
+        self.brush_action.setChecked(self.brush_active)  # Sync with initial state
+        self.brush_action.triggered.connect(self.toggle_brush_tool)
+        self.brush_action.setIcon(QIcon(brush_icon_path))
+        toolbar.addAction(self.brush_action)
+
+        # Add Erase Tool button
+        self.erase_action = QAction("Erase Tool", mainwindow)
+        self.erase_action.setCheckable(True)
+        self.erase_action.setChecked(self.erase_active)
+        self.erase_action.triggered.connect(self.toggle_erase_tool)
+        self.erase_action.setIcon(QIcon(eraser_icon_path))
+        toolbar.addAction(self.erase_action)
+
+        # paintbrush size slider
+        self.brush_size_slider = LabeledSlider("Brush Size:", initial_value=self.paintbrush.radius)
+        self.brush_size_slider.slider.valueChanged.connect(self.update_brush_size)
+        toolbar.addWidget(self.brush_size_slider)
+
+    def update_brush_size(self, value):
+        self.paintbrush.set_radius(value)
+
+    def create_layer_manager(self):
+        
+        mainwindow = self.get_mainwindow()
+        
+        # Create a dockable widget
+        dock = QDockWidget("Segmentation Layer Manager ", mainwindow)
+        dock.setAllowedAreas(Qt.RightDockWidgetArea)
+        mainwindow.addDockWidget(Qt.RightDockWidgetArea, dock)
+
+        # Layer manager layout
+        layer_widget = QWidget()
+        layer_layout = QVBoxLayout()
+
+        # Layer list
+        self.list_widget_for_segmentation_layers = QListWidget()
+        self.list_widget_for_segmentation_layers.currentItemChanged.connect(self.layer_list_widget_on_current_item_changed)
+        layer_layout.addWidget(self.list_widget_for_segmentation_layers)
+
+        # Buttons to manage layers
+        button_layout = QHBoxLayout()
+
+        add_layer_button = QPushButton("Add Layer")
+        add_layer_button.clicked.connect(self.add_layer_clicked)
+        button_layout.addWidget(add_layer_button)
+
+        remove_layer_button = QPushButton("Remove Layer")
+        remove_layer_button.clicked.connect(self.remove_layer_clicked)
+        button_layout.addWidget(remove_layer_button)
+
+        # Add the button layout at the top
+        layer_layout.addLayout(button_layout)
+        # Set layout for the layer manager
+        layer_widget.setLayout(layer_layout)
+        dock.setWidget(layer_widget)
+
+    def layer_list_widget_on_current_item_changed(self, current, previous):
+        if current:
+            # Retrieve the custom widget associated with the current QListWidgetItem
+            item_widget = self.list_widget_for_segmentation_layers.itemWidget(current)
+            
+            if item_widget and isinstance(item_widget, LayerItemWidget):
+                # Access the layer_name from the custom widget
+                layer_name = item_widget.layer_name
+                if self.active_layer_name != layer_name:
+                    self.active_layer_name = layer_name
+                    self.print_status(f"Layer {layer_name} selected")
+                    
+
+    def toggle_brush_tool(self):
+        
+        self.brush_active = not self.brush_active
+
+        self.erase_active = False  # Disable erase tool when brush is active
+        self.erase_action.setChecked(False)  # Uncheck the erase button
+
+        self.brush_action.setChecked(self.brush_active)
+        if self.brush_active:
+            self.brush_action.setText("Brush Tool (Active)")
+            self.print_status("Brush tool activated")
+        else:
+            self.brush_action.setText("Brush Tool (Inactive)")
+            self.print_status("Brush tool deactivated")
+
+        self.enable_paintbrush(self.brush_active)
+
+    def toggle_erase_tool(self):
+        self.erase_active = not self.erase_active
+        self.brush_active = False  # Disable brush tool when erase is active
+        self.brush_action.setChecked(False)  # Uncheck the brush button
+
+        self.erase_action.setChecked(self.erase_active)
+        if self.erase_active:
+            self.erase_action.setText("Erase Tool (Active)")
+            self.print_status("Erase tool activated")
+        else:
+            self.erase_action.setText("Erase Tool (Inactive)")
+            self.print_status("Erase tool deactivated")    
+          
+
+    def get_status_bar(self):
+        return self._mainwindow.status_bar
+    
+    def print_status(self, msg):
+        if self.get_status_bar() is not None:
+            self.get_status_bar().showMessage(msg)
+    
+    def add_layer_widget_item(self, layer_name, layer_data):
+
+        # Create a custom widget for the layer
+        layer_item_widget = LayerItemWidget(layer_name, layer_data, self)
+        layer_item = QListWidgetItem(self.list_widget_for_segmentation_layers)
+        layer_item.setSizeHint(layer_item_widget.sizeHint())
+        self.list_widget_for_segmentation_layers.addItem(layer_item)
+        self.list_widget_for_segmentation_layers.setItemWidget(layer_item, layer_item_widget) # This replaces the default text-based display with the custom widget that includes the checkbox and label.
+
+        # set the added as active (do I need to indicate this in the list widget?)
+        self.active_layer_name = layer_name
+    
+    def generate_unique_layer_name(self, base_name="Layer"):
+        index = 1
+        while f"{base_name} {index}" in self.segmentation_layers:
+            index += 1
+        return f"{base_name} {index}"
+    
+    def add_layer_clicked(self):
+
+        # Generate a random bright color for the new layer
+        layer_color = color_rotator.next()
+
+        # add layer data        
+        layer_name = self.generate_unique_layer_name()
+        segmentation = vtk.vtkImageData()
+        segmentation.DeepCopy(self.create_empty_segmentation())
+        actor = self.create_segmentation_actor(segmentation, color=layer_color, alpha=0.8)
+        layer_data = SegmentationLayer(segmentation=segmentation, color=layer_color, alpha=0.8, actor=actor)
+        self.segmentation_layers[layer_name] = layer_data
+        self.vtk_renderer.AddActor(actor)
+        self.vtk_renderer.GetRenderWindow().Render()
+
+        self.add_layer_widget_item(layer_name, layer_data)
+
+
+
+    def remove_layer_clicked(self):
+        if len(self.list_widget_for_segmentation_layers) == 1:
+                self.print_status("At least 1 layer is required.")
+                return 
+
+        selected_items = self.list_widget_for_segmentation_layers.selectedItems()
+        if not selected_items:
+            return
+
+        for item in selected_items:
+            widget = self.list_widget_for_segmentation_layers.itemWidget(item)
+            layer_name = widget.layer_name
+
+            # remove actor
+            actor = self.segmentation_layers[layer_name].actor
+            self.vtk_renderer.RemoveActor(actor)
+
+            # Remove from the data list
+            del self.segmentation_layers[layer_name]
+
+            # Remove from the list widget
+            self.list_widget_for_segmentation_layers.takeItem(self.list_widget_for_segmentation_layers.row(item))
+
+        # render
+        self.get_graphics_view().render_layers()
 
     def add_layer(self):
         """Add a new segmentation layer."""
@@ -838,7 +1138,7 @@ class SegmentationListManager(QWidget):
             self.vtk_viewer.set_active_segmentation(segmentation)
 
     def get_base_image(self):
-        return self.vtk_viewer.image_data
+        return self.vtk_viewer.vtk_image
     
     def create_empty_segmentation(self):
         """Create an empty segmentation as vtkImageData with the same geometry as the base image."""
@@ -869,14 +1169,14 @@ class SegmentationListManager(QWidget):
         return segmentation
 
 
-    def create_segmentation_actor(self, segmentation):
+    def create_segmentation_actor(self, segmentation, color=(1, 0, 0), alpha=0.8):
         """Create a VTK actor for a segmentation layer."""
         # Create a lookup table for coloring the segmentation
         lookup_table = vtk.vtkLookupTable()
         lookup_table.SetNumberOfTableValues(2)  # For 0 (background) and 1 (segmentation)
         lookup_table.SetTableRange(0, 1)       # Scalar range
         lookup_table.SetTableValue(0, 0, 0, 0, 0)  # Background: Transparent
-        lookup_table.SetTableValue(1, 1, 0, 0, 0.8)  # Segmentation: Red with 50% opacity
+        lookup_table.SetTableValue(1, color[0], color[1], color[2], alpha)  # Segmentation: Red with 50% opacity
         lookup_table.Build()
         
         mapper = vtk.vtkImageMapToColors()
@@ -892,205 +1192,413 @@ class SegmentationListManager(QWidget):
         
         return actor
 
-
-import pyvista as pv
-import numpy as np
-
-class PyVistaWindow:
-    def __init__(self, vtk_viewer):
-        self.vtk_viewer = vtk_viewer
-        self.plotter = pv.Plotter(title="PyVista Visualization", window_size=(800, 600))
-    
-    def extract_camera_parameters(self):
-        """Extract camera parameters from the VTK viewer."""
-        camera = self.vtk_viewer.base_renderer.GetActiveCamera()
-        position = np.array(camera.GetPosition())
-        focal_point = np.array(camera.GetFocalPoint())
-        view_up = np.array(camera.GetViewUp())
-        clipping_range = camera.GetClippingRange()
-        parallel_scale = camera.GetParallelScale()
-        aspect_ratio = self.plotter.window_size[0] / self.plotter.window_size[1]
-        return position, focal_point, view_up, clipping_range, parallel_scale, aspect_ratio
-
-    def create_camera_frustum(self, position, focal_point, view_up, clipping_range, parallel_scale, aspect_ratio):
-        """Create a PyVista representation of the camera frustum."""
-        direction = focal_point - position
-        direction = direction / np.linalg.norm(direction)  # Normalize the direction vector
-
-        # Calculate frustum corners at near and far clipping planes
-        near_plane = position + direction * clipping_range[0]
-        far_plane = position + direction * clipping_range[1]
-
-        # Frustum dimensions
-        near_height = parallel_scale
-        near_width = near_height * aspect_ratio
-        far_height = near_height * (clipping_range[1] / clipping_range[0])
-        far_width = far_height * aspect_ratio
-
-        # Calculate the corners
-        def calculate_corners(center, width, height, view_up):
-            right = np.cross(direction, view_up)
-            right = right / np.linalg.norm(right)
-            up = view_up / np.linalg.norm(view_up)
-            return [
-                center - right * width - up * height,  # Bottom-left
-                center + right * width - up * height,  # Bottom-right
-                center + right * width + up * height,  # Top-right
-                center - right * width + up * height,  # Top-left
-            ]
-
-        near_corners = calculate_corners(near_plane, near_width, near_height, view_up)
-        far_corners = calculate_corners(far_plane, far_width, far_height, view_up)
-
-        # Create a PolyData representation
-        points = near_corners + far_corners
-        lines = [
-            [2, 0, 1], [2, 1, 2], [2, 2, 3], [2, 3, 0],  # Near plane
-            [2, 4, 5], [2, 5, 6], [2, 6, 7], [2, 7, 4],  # Far plane
-            [2, 0, 4], [2, 1, 5], [2, 2, 6], [2, 3, 7],  # Connecting edges
-        ]
-        return pv.PolyData(points, lines)
-
-    def extract_image_plane(self):
-        """Create a PyVista representation of the image plane."""
-        image_data = self.vtk_viewer.image_data
-        dims = image_data.GetDimensions()
-        spacing = image_data.GetSpacing()
-        origin = image_data.GetOrigin()
-
-        # Create an image plane using the bounds
-        x_range = origin[0] + np.array([0, dims[0]]) * spacing[0]
-        y_range = origin[1] + np.array([0, dims[1]]) * spacing[1]
-        z = origin[2]
-
-        # Create PyVista surface (rectangle) for the image plane
-        points = [
-            [x_range[0], y_range[0], z],
-            [x_range[1], y_range[0], z],
-            [x_range[1], y_range[1], z],
-            [x_range[0], y_range[1], z],
-        ]
-        faces = [4, 0, 1, 2, 3]  # One face connecting all points
-        plane = pv.PolyData(points, faces)
-        return plane
-
-    def setup_scene(self):
-        """Setup the PyVista scene with the camera, image plane, and line widget."""
-        # Extract camera parameters
-        position, focal_point, view_up, clipping_range, parallel_scale, aspect_ratio = self.extract_camera_parameters()
-
-        # Add camera frustum
-        camera_frustum = self.create_camera_frustum(position, focal_point, view_up, clipping_range, parallel_scale, aspect_ratio)
-        self.plotter.add_mesh(camera_frustum, color="green", opacity=0.5, label="Camera Frustum")
-
-        # Add image plane
-        image_plane = self.extract_image_plane()
-        self.plotter.add_mesh(image_plane, color="lightgray", opacity=0.5, label="Image Plane")
-
-        # Add a legend and axes
-        self.plotter.add_legend()
-        self.plotter.add_axes()
-
-    def show(self):
-        """Render the PyVista visualization."""
-        self.setup_scene()
-        self.plotter.show()
-
-
-# Function to open the PyVista visualization
-def open_pyvista_window(vtk_viewer):
-    pv_window = PyVistaWindow(vtk_viewer)
-    pv_window.show()
-
-
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         
-        self.setWindowTitle("VTK Viewer with Paintbrush")
-
-        central_widget = QWidget()
-        layout = QHBoxLayout()
-
-        # VTK Viewer
-        self.vtk_viewer = VTKViewer(self)
-        layout.addWidget(self.vtk_viewer)
-
+        ### init ui ###    
+        self.init_ui()
 
         # Segmentation Manager
         self.segmentation_manager = SegmentationListManager(self.vtk_viewer, self)
-        layout.addWidget(self.segmentation_manager)
+        
+        self.segmentation_manager.init_ui()
+        
 
-        # Zoom Buttons
-        zoom_layout = QVBoxLayout()
-        zoom_in_button = QPushButton("Zoom In")
-        zoom_in_button.clicked.connect(self.vtk_viewer.zooming.zoom_in)
-        zoom_layout.addWidget(zoom_in_button)
-
-        zoom_out_button = QPushButton("Zoom Out")
-        zoom_out_button.clicked.connect(self.vtk_viewer.zooming.zoom_out)
-        zoom_layout.addWidget(zoom_out_button)
-
-        # Add Zooming Button
-        zoom_button = QPushButton("Zoom")
-        zoom_button.setCheckable(True)
-        zoom_button.toggled.connect(self.vtk_viewer.toggle_zooming_mode)
-        zoom_layout.addWidget(zoom_button)
-
-        # Add Panning Button
-        panning_button = QPushButton("Panning")
-        panning_button.setCheckable(True)
-        panning_button.toggled.connect(self.vtk_viewer.toggle_panning_mode)
-        zoom_layout.addWidget(panning_button)
-
-        layout.addLayout(zoom_layout)
-
-
-
-        # Tools Layout
-        tools_layout = QVBoxLayout()
-
-        # Add Ruler Button
-        add_ruler_button = QPushButton("Add Ruler")
-        add_ruler_button.clicked.connect(self.vtk_viewer.add_ruler)
-        tools_layout.addWidget(add_ruler_button)
-
-
-        # Add Toggle Button
-        toggle_image_button = QPushButton("Toggle Base Image")
-        toggle_image_button.setCheckable(True)
-        toggle_image_button.setChecked(True)
-        toggle_image_button.toggled.connect(self.vtk_viewer.toggle_base_image)
-        tools_layout.addWidget(toggle_image_button)
-
-
-        # Add PyVista Window Button
-        pyvista_button = QPushButton("Open PyVista Window")
-        pyvista_button.clicked.connect(self.open_pyvista_window)
-        tools_layout.addWidget(pyvista_button)
-
-
-        # Print Object Properties Button
-        print_properties_button = QPushButton("Print Object Properties")
-        print_properties_button.clicked.connect(self.vtk_viewer.print_properties)
-        tools_layout.addWidget(print_properties_button)
-
-        layout.addLayout(tools_layout)
-
-        central_widget.setLayout(layout)
-        self.setCentralWidget(central_widget)
-
+        self.vitk_image = None
 
         # Load a sample DICOM file
         dicom_file = "W:/RadOnc/Planning/Physics QA/2024/1.Monthly QA/TrueBeamSH/2024_11/imaging/jaw_cal.dcm"
-        self.vtk_viewer.load_dicom(dicom_file)
-    
-    def open_pyvista_window(self):
-        open_pyvista_window(self.vtk_viewer)
+        self.load_dicom(dicom_file)
 
-    
+    def init_ui(self):
+        self.setWindowTitle("Image Labeler 2D")
+        self.setGeometry(100, 100, 1024, 786)
+
+        self.main_widget = QWidget()
+        self.layout = QVBoxLayout()
+
+        # VTK Viewer
+        self.vtk_viewer = VTKViewer(self)
+        self.layout.addWidget(self.vtk_viewer)
+
+        self.main_widget.setLayout(self.layout)
+        self.setCentralWidget(self.main_widget)
+
+        # Add the File menu
+        self.create_menu()
+        self.create_file_toolbar()
+        self.create_view_toolbar()
+
+        # Add status bar
+        self.status_bar = self.statusBar()
+        self.status_bar.showMessage("Ready")  # Initial message
+
+    def load_dicom(self, dicom_path):
+
+        # Use VTK DICOM Reader
+        reader = vtk.vtkDICOMImageReader()
+        reader.SetFileName(dicom_path)
+        reader.Update()
+
+        # Check if the output is valid
+        if not reader.GetOutput():
+            print("Error: Could not read DICOM file.")
+            return
+
+        self.vtk_image = reader.GetOutput()
+        self.vtk_viewer.vtk_image = self.vtk_image
+
+        # Extract correct spacing for RTImage using pydicom
+        import pydicom
+        dicom_dataset = pydicom.dcmread(dicom_path)
+        if dicom_dataset.Modality == "RTIMAGE":
+            # Extract necessary tags
+            if hasattr(dicom_dataset, "ImagePlanePixelSpacing"):
+                pixel_spacing = dicom_dataset.ImagePlanePixelSpacing  # [row spacing, column spacing]
+            else:
+                raise ValueError("RTImage is missing ImagePlanePixelSpacing")
+
+            if hasattr(dicom_dataset, "RadiationMachineSAD"):
+                SAD = float(dicom_dataset.RadiationMachineSAD)
+            else:
+                raise ValueError("RTImage is missing RadiationMachineSAD")
+
+            if hasattr(dicom_dataset, "RTImageSID"):
+                SID = float(dicom_dataset.RTImageSID)
+            else:
+                raise ValueError("RTImage is missing RTImageSID")
+
+            # Scale pixel spacing to SAD scale
+            scaling_factor = SAD / SID
+            scaled_spacing = [spacing * scaling_factor for spacing in pixel_spacing]
+
+            # Update spacing in vtkImageData
+            self.vtk_image.SetSpacing(scaled_spacing[1], scaled_spacing[0], 1.0)  # Column, Row, Depth
+
+            # Print the updated spacing
+            print(f"Updated Spacing: {self.vtk_image.GetSpacing()}")
+
+        # align the center of the image to the center of the world coordiante system
+        # Get image properties
+        dims = self.vtk_image.GetDimensions()
+        spacing = self.vtk_image.GetSpacing()
+        original_origin = self.vtk_image.GetOrigin()
+
+        print('dims: ', dims)
+        print('spacing: ', spacing)
+        print('original_origin: ', original_origin)
+
+        # Get the scalar range (pixel intensity range)
+        scalar_range = self.vtk_image.GetScalarRange()
+        min_intensity, max_intensity = scalar_range
+
+        # Dynamically adjust sliders based on intensity range
+        self.window_slider.slider.setMinimum(1)
+        self.window_slider.slider.setMaximum(int(max_intensity - min_intensity))
+        self.window_slider.slider.setValue(int((max_intensity - min_intensity) / 2))  # Default to half of the range
+
+        self.level_slider.slider.setMinimum(int(min_intensity))
+        self.level_slider.slider.setMaximum(int(max_intensity))
+        self.level_slider.slider.setValue(int((max_intensity + min_intensity) / 2))  # Default to the center of the range
+
+        # Connect reader to window/level filter
+        self.vtk_viewer.window_level_filter.SetInputConnection(reader.GetOutputPort())
+        self.vtk_viewer.window_level_filter.SetWindow(self.window_slider.slider.value())
+        self.vtk_viewer.window_level_filter.SetLevel(self.level_slider.slider.value())
+        self.vtk_viewer.window_level_filter.Update()
+
+        # Set the filter output to the actor
+        self.vtk_viewer.image_actor.GetMapper().SetInputConnection(self.vtk_viewer.window_level_filter.GetOutputPort())
+        self.vtk_viewer.get_renderer().ResetCamera()
+
+        self.vtk_viewer.get_render_window().Render()
+
+    def print_status(self, msg):
+        self.status_bar.showMessage(msg)
+
+    def create_menu(self):
+        # Create a menu bar
+        menubar = self.menuBar()
+
+        # Add the File menu
+        file_menu = menubar.addMenu("File")
+        self.create_file_menu(file_menu)
+
+        # Add View menu
+        view_menu = menubar.addMenu("View")
+        self.create_view_menu(view_menu)
+
+
+    def create_file_menu(self, file_menu):
         
+        from PyQt5.QtWidgets import QAction
+        
+        # Add Open DICOM action
+        open_image_action = QAction("Open Image", self)
+        open_image_action.triggered.connect(self.open_dicom)
+        file_menu.addAction(open_image_action)
+
+        # Add Save Workspace action
+        open_workspace_action = QAction("Open Workspace", self)
+        open_workspace_action.triggered.connect(self.load_workspace)
+        file_menu.addAction(open_workspace_action)
+
+        # Add Save Workspace action
+        save_workspace_action = QAction("Save Workspace", self)
+        save_workspace_action.triggered.connect(self.save_workspace)
+        file_menu.addAction(save_workspace_action)
+
+        # Print Object Properties Button
+        print_objects_action = QAction("Print Object Properties", self)
+        print_objects_action.triggered.connect(self.vtk_viewer.print_properties)
+        file_menu.addAction(print_objects_action)
+        
+    def create_view_menu(self, view_menu):
+        
+        # Zoom In
+        zoom_in_action = QAction("Zoom In", self)
+        zoom_in_action.triggered.connect(self.vtk_viewer.zooming.zoom_in)
+        view_menu.addAction(zoom_in_action)
+
+        # Zoom Out
+        zoom_out_action = QAction("Zoom Out", self)
+        zoom_out_action.triggered.connect(self.vtk_viewer.zooming.zoom_out)
+        view_menu.addAction(zoom_out_action)
+
+        # Zoom Reset
+        zoom_reset_action = QAction("Zoom Reset", self)
+        zoom_reset_action.triggered.connect(self.vtk_viewer.zooming.zoom_reset)
+        view_menu.addAction(zoom_reset_action)
+        
+        # Add Toggle Button
+        toggle_image_button = QAction("Toggle Base Image", self)
+        toggle_image_button.setCheckable(True)
+        toggle_image_button.setChecked(True)
+        toggle_image_button.triggered.connect(self.vtk_viewer.toggle_base_image)
+        view_menu.addAction(toggle_image_button)
+
+
+    def create_file_toolbar(self):
+        # Create a toolbar
+        toolbar = QToolBar("File Toolbar", self)
+        self.addToolBar(Qt.TopToolBarArea, toolbar)
+
+        # Add actions to the toolbar
+        # Add Open DICOM action
+        open_action = QAction("Open Image", self)
+        open_action.triggered.connect(self.open_dicom)
+        toolbar.addAction(open_action)
+
+        # Add Save Workspace action
+        open_workspace_action = QAction("Open Workspace", self)
+        open_workspace_action.triggered.connect(self.load_workspace)
+        toolbar.addAction(open_workspace_action)
+
+        save_workspace_action = QAction("Save Workspace", self)
+        save_workspace_action.triggered.connect(self.save_workspace)
+        toolbar.addAction(save_workspace_action)
+
+    def create_view_toolbar(self):
+        from labeled_slider import LabeledSlider
+
+        # Create a toolbar
+        toolbar = QToolBar("View Toolbar", self)
+        self.addToolBar(Qt.TopToolBarArea, toolbar)
+
+        # window_level_slider - level slider
+        self.window_slider = LabeledSlider("Window Level:")
+        self.window_slider.slider.valueChanged.connect(self.update_window_level)
+        toolbar.addWidget(self.window_slider)
+
+        # window_level_slider - width slider
+        self.level_slider = LabeledSlider("Window Width:")
+        self.level_slider.slider.valueChanged.connect(self.update_window_level)
+        toolbar.addWidget(self.level_slider)
+        
+        # zoom in action
+        zoom_in_action = QAction("Zoom In", self)
+        zoom_in_action.triggered.connect(self.vtk_viewer.zooming.zoom_in)
+        toolbar.addAction(zoom_in_action)    
+        
+         # zoom out action
+        zoom_out_action = QAction("Zoom Out", self)
+        zoom_out_action.triggered.connect(self.vtk_viewer.zooming.zoom_out)
+        toolbar.addAction(zoom_out_action)    
+
+        # zoom reset button
+        zoom_reset_action = QAction("Zoom Reset", self)
+        zoom_reset_action.triggered.connect(self.vtk_viewer.zooming.zoom_reset)
+        toolbar.addAction(zoom_reset_action)        
+
+        # zoom toggle button
+        zoom_action = QAction("Zoom", self)
+        zoom_action.setCheckable(True)
+        zoom_action.triggered.connect(self.vtk_viewer.toggle_zooming_mode)
+        toolbar.addAction(zoom_action)        
+
+
+        # pan toggle button
+        plan_action = QAction("Pan", self)
+        plan_action.setCheckable(True)
+        plan_action.triggered.connect(self.vtk_viewer.toggle_panning_mode)
+        toolbar.addAction(plan_action)        
+        
+
+
+        # Add ruler toggle action
+        add_ruler_action = QAction("Add Ruler", self)
+        add_ruler_action.triggered.connect(self.vtk_viewer.add_ruler)
+        toolbar.addAction(add_ruler_action)
+
+    def update_window_level(self):
+        if self.vtk_image is not None:
+            self.vtk_viewer.window_level_filter.SetWindow(self.window_slider.slider.value())
+            self.vtk_viewer.window_level_filter.SetLevel(self.level_slider.slider.value())
+            self.vtk_viewer.get_render_window().Render()
+
+    def set_default_window_level(self, image_array):
+        import numpy as np
+
+        # Set default window-level values
+        min = np.min(image_array)
+        max = np.max(image_array)
+
+        default_level = int((max + min) / 2)
+        default_width = int(max - min)
+
+        self.window_slider.setMinimum(min)
+        self.window_slider.setMaximum(max)
+        self.window_slider.setTickInterval(int(default_width/200))
+        self.window_slider.setValue(default_level)
+            
+        self.level_slider.setMinimum(1)
+        self.level_slider.setMaximum(default_width)
+        self.level_slider.setTickInterval(int(default_width/200))
+        self.level_slider.setValue(default_width)
+
+    def open_dicom(self):
+        import SimpleITK as sitk
+
+        init_folder = "W:/RadOnc/Planning/Physics QA/2024/1.Monthly QA/TrueBeamSH/2024_11/imaging"
+        file_path, _ = QFileDialog.getOpenFileName(self, "Open DICOM File", init_folder, "DICOM Files (*.dcm)")
+        if file_path:
+            # Load DICOM using SimpleITK
+            self.sitk_image = sitk.ReadImage(file_path)
+            image_array = sitk.GetArrayFromImage(self.sitk_image)[0]
+
+            self.set_default_window_level(image_array)
+
+            self.image_array = image_array
+           
+            self.update_window_level()
+
+            self.graphics_view.render_layers()
+
+            # notify other managers
+            self.segmentation_list_manager.on_image_loaded(self.sitk_image)
+            self.point_list_manager.on_image_loaded(self.sitk_image)
+
+    def save_workspace(self):
+        import json
+        import os
+        from PyQt5.QtWidgets import QFileDialog
+
+        """Save the current workspace to a folder."""
+        if self.image_array is None:
+            self.print_status("No image loaded. Cannot save workspace.")
+            return
+
+        # workspace json file
+        workspace_json_path, _ = QFileDialog.getSaveFileName(self, "Save Workspace", "", "Json (*.json)")
+        if not workspace_json_path:
+            return 
+        
+        # data folder for the workspace
+        data_dir = workspace_json_path+".data"
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir)
+
+        # Create a metadata dictionary
+        workspace_data = {
+            "window_settings": {
+                "level": self.window_slider.get_value(),
+                "width": self.level_slider.get_value(),
+            }
+        }
+
+        # Save input image as '.mha'
+        input_image_path = os.path.join(data_dir, "input_image.mha")
+        sitk.WriteImage(self.sitk_image, input_image_path, useCompression=True)
+
+        #save segmentation layers
+        self.segmentation_list_manager.save_state(workspace_data, data_dir)
+
+        # Save points metadata
+        self.point_list_manager.save_state(workspace_data, data_dir)
+
+        # Save metadata as 'workspace.json'
+        with open(workspace_json_path, "w") as f:
+            json.dump(workspace_data, f, indent=4)
+
+        self.print_status(f"Workspace saved to {workspace_json_path}.")
+
+    def load_workspace(self):
+        import json
+        import os
+
+        """Load a workspace from a folder."""
+        init_dir = "W:/RadOnc/Planning/Physics QA/2024/1.Monthly QA/TrueBeamSH/2024_11/imaging"
+        workspace_json_path, _ = QFileDialog.getOpenFileName(self, "Select Workspace File", init_dir, "JSON Files (*.json)")
+        if not workspace_json_path:
+           return
+
+        # Load metadata from 'workspace.json'
+        if not os.path.exists(workspace_json_path):
+            self.print_status("Workspace JSON file not found.")
+            return
+
+        data_path = workspace_json_path+".data"
+        if not os.path.exists(data_path):
+            self.print_status("Workspace data folder not found.")
+            return
+
+        try:
+            with open(workspace_json_path, "r") as f:
+                workspace_data = json.load(f)
+        except json.JSONDecodeError as e:
+            self.print_status(f"Failed to parse workspace.json: {e}")
+            return
+
+        # Clear existing workspace
+        self.image_array = None
+        self.sitk_image = None
+        self.point_list_manager.points.clear()
+
+        # Load input image
+        input_image_path = os.path.join(data_path, "input_image.mha")
+        if os.path.exists(input_image_path):
+            try:
+                self.sitk_image = sitk.ReadImage(input_image_path)
+                self.image_array = sitk.GetArrayFromImage(self.sitk_image)[0]
+                self.set_default_window_level(self.image_array)  # Call set_default_window_level
+            except Exception as e:
+                self.print_status(f"Failed to load input image: {e}")
+                return
+
+        self.segmentation_list_manager.load_state(workspace_data, data_path, {'base_image': self.sitk_image})
+        self.point_list_manager.load_state(workspace_data, data_path, {'base_image': self.sitk_image})
+
+        # Restore window settings
+        window_settings = workspace_data.get("window_settings", {})
+        self.window_slider.set_value(window_settings.get("level", 0))
+        self.level_slider.set_value(window_settings.get("width", 1))
+
+        # Render the workspace
+        if self.image_array is not None:
+            self.graphics_view.render_layers()
+
+        self.print_status(f"Workspace loaded from {data_path}.")
 
 if __name__ == "__main__":
     import sys

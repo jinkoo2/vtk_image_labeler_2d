@@ -246,11 +246,8 @@ class MainWindow(QMainWindow):
 
         # Add the File menu
         self.create_menu()
-      
         self.create_file_toolbar()
         self.create_view_toolbar()
-
-        self.graphics_view.add_ruler()  # Add a ruler initially
 
         # Add status bar
         self.status_bar = self.statusBar()
@@ -287,8 +284,6 @@ class MainWindow(QMainWindow):
         save_workspace_action = QAction("Save Workspace", self)
         save_workspace_action.triggered.connect(self.save_workspace)
         file_menu.addAction(save_workspace_action)
-
-
 
     def create_view_menu(self, view_menu):
         

@@ -640,4 +640,3 @@ class SegmentationListManager:
             else:
                 self.print_status(f"Segmentation file for layer {layer_name} not found.")
 
-
