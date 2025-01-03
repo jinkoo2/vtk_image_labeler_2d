@@ -3,7 +3,6 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QSl
 from PyQt5.QtCore import Qt
 from vtk.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 
-
 class CircleBrush:
     def __init__(self, radius=5):
         self.radius = radius
