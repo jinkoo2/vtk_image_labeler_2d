@@ -25,7 +25,7 @@ class CircleBrush:
 
 import math
 
-
+'''
 class CustomInteractorStyle(vtk.vtkInteractorStyleImage):
     def __init__(self, parent=None):
         super().__init__()
@@ -48,12 +48,109 @@ class CustomInteractorStyle(vtk.vtkInteractorStyleImage):
         if self.parent:
             self.parent.on_left_button_release(None, "LeftButtonReleaseEvent")
         super().OnLeftButtonUp()
+'''
+class Panning:
+    def __init__(self, viewer=None):
+        self.viewer = viewer
+        self.interactor = viewer.interactor
+        self.left_button_is_pressed = False
+        self.last_mouse_position = None
+        self.enabled = False
 
+    def enable(self, enabled=True):
+        self.enabled = enabled
 
+        if enabled:
+            self.interactor.AddObserver("LeftButtonPressEvent", self.on_left_button_press)
+            self.interactor.AddObserver("MouseMoveEvent", self.on_mouse_move)
+            self.interactor.AddObserver("LeftButtonReleaseEvent", self.on_left_button_release)
+        else:    
+            self.interactor.RemoveObserver("LeftButtonPressEvent", self.on_left_button_press)
+            self.interactor.RemoveObserver("MouseMoveEvent", self.on_mouse_move)
+            self.interactor.RemoveObserver("LeftButtonReleaseEvent", self.on_left_button_release)    
+            self.last_mouse_position = None
+
+        if enabled:
+            self.viewer.setCursor(Qt.OpenHandCursor)  # Change cursor for panning mode
+        else:
+            self.viewer.setCursor(Qt.ArrowCursor)  # Reset cursor
+        
+        print(f"Panning mode: {'enabled' if enabled else 'disabled'}")
+    
+    def on_left_button_press(self, obj, event):
+        if not self.enabled:
+            return
+        
+        self.left_button_is_pressed = True
+        self.last_mouse_position = self.interactor.GetEventPosition()
+
+    def on_mouse_move(self, obj, event):
+        if not self.enabled:
+            return
+
+        if self.left_button_is_pressed:
+            self.perform_panning()
+
+        self.viewer.render_window.Render()
+
+    def on_left_button_release(self, obj, event):
+        if not self.enabled:
+            return
+        
+        self.left_button_is_pressed = False
+        self.last_mouse_position = None
+
+    def perform_panning(self):
+        """Perform panning based on mouse movement, keeping the pointer fixed on the same point in the image."""
+        current_mouse_position = self.interactor.GetEventPosition()
+
+        if self.last_mouse_position:
+            
+            renderer = self.viewer.get_renderer()
+            
+            # Get the camera and renderer
+            camera = renderer.GetActiveCamera()
+
+            # Convert mouse positions to world coordinates
+            picker = vtk.vtkWorldPointPicker()
+
+            # Pick world coordinates for the last mouse position
+            picker.Pick(self.last_mouse_position[0], self.last_mouse_position[1], 0, renderer)
+            last_world_position = picker.GetPickPosition()
+
+            # Pick world coordinates for the current mouse position
+            picker.Pick(current_mouse_position[0], current_mouse_position[1], 0, renderer)
+            current_world_position = picker.GetPickPosition()
+
+            # Compute the delta in world coordinates
+            delta_world = [
+                last_world_position[0] - current_world_position[0],
+                last_world_position[1] - current_world_position[1],
+                last_world_position[2] - current_world_position[2],
+            ]
+
+            # Update the camera position and focal point
+            camera.SetFocalPoint(
+                camera.GetFocalPoint()[0] + delta_world[0],
+                camera.GetFocalPoint()[1] + delta_world[1],
+                camera.GetFocalPoint()[2] + delta_world[2],
+            )
+            camera.SetPosition(
+                camera.GetPosition()[0] + delta_world[0],
+                camera.GetPosition()[1] + delta_world[1],
+                camera.GetPosition()[2] + delta_world[2],
+            )
+
+            # Render the updated scene
+            self.viewer.render_window.Render()
+
+        # Update the last mouse position
+        self.last_mouse_position = current_mouse_position
+        
+        
 class VTKViewer(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-
     
         background_color = (0.5, 0.5, 0.5)
 
@@ -150,7 +247,11 @@ class VTKViewer(QWidget):
         self.interactor.AddObserver("MouseMoveEvent", self.on_mouse_move)
 
         self.rulers = []
+        self.panning = Panning(viewer=self)  # State to track panning mode
 
+    def get_renderer(self):
+        return self.base_renderer
+    
     def get_camera_info(self):
         """Retrieve the camera's position and direction in the world coordinate system."""
         camera = self.base_renderer.GetActiveCamera()
@@ -297,6 +398,8 @@ class VTKViewer(QWidget):
         else:
             self.brush_actor.SetVisibility(False)  # Hide the brush when not painting
 
+        #self.panning.on_mouse_move(obj, event)
+
         self.render_window.Render()
 
     def on_left_button_press(self, obj, event):
@@ -304,8 +407,13 @@ class VTKViewer(QWidget):
         if self.painting_enabled and self.active_segmentation:
             self.paint_at_mouse_position()
 
+        # for panning
+        #self.planning.on_left_button_press(obj, event)
+
     def on_left_button_release(self, obj, event):
         self.left_button_is_pressed = False
+        
+        #self.panning.on_left_button_release(obj, event)
         return
     
     def update_circle_geometry(self, radius):
@@ -550,8 +658,12 @@ class VTKViewer(QWidget):
         """Set the currently active segmentation layer."""
         self.active_segmentation = segmentation
 
+    def toggle_panning_mode(self, enabled):
+        """Enable or disable panning mode."""
+        self.panning.enable(enabled)
 
-
+        
+    
     def paint_at_mouse_position(self):
         mouse_pos = self.interactor.GetEventPosition()
         picker = vtk.vtkWorldPointPicker()
@@ -869,6 +981,12 @@ class MainWindow(QMainWindow):
         zoom_out_button = QPushButton("Zoom Out")
         zoom_out_button.clicked.connect(self.zoom_out)
         zoom_layout.addWidget(zoom_out_button)
+
+        # Add Panning Button
+        panning_button = QPushButton("Activate Panning")
+        panning_button.setCheckable(True)
+        panning_button.toggled.connect(self.vtk_viewer.toggle_panning_mode)
+        zoom_layout.addWidget(panning_button)
 
         layout.addLayout(zoom_layout)
 
