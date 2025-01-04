@@ -11,8 +11,9 @@ from PyQt5.QtWidgets import QWidget, QHBoxLayout, QCheckBox, QLabel, QListWidget
 from PyQt5.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QIcon
 
 class PaintBrush:
-    def __init__(self, radius=20, color= (0,255,0), line_thickness= 1):
-        self.radius = radius
+    def __init__(self, radius_in_pixel=(20,20), pixel_spacing=(1.0, 1.0), color= (0,255,0), line_thickness= 1):
+        self.radius_in_pixel = radius_in_pixel
+        self.pixel_spacing = pixel_spacing
 
         # Paintbrush setup
         self.active_segmentation = None  # Reference to the active segmentation
@@ -36,15 +37,20 @@ class PaintBrush:
         self.brush_actor.SetMapper(self.brush_mapper)
         self.brush_actor.GetProperty().SetColor(color[0], color[1], color[2])  
 
-        self.set_radius(radius)
+        self.set_radius_in_pixel(radius_in_pixel, pixel_spacing=(1.0, 1.0))
     def get_actor(self):
         return self.brush_actor
     
-    def set_radius(self, radius):
-        self.radius = radius
-        self.update_circle_geometry(radius)
+    def set_radius_in_pixel(self, radius_in_pixel, pixel_spacing):
+        
+        self.radius_in_pixel = radius_in_pixel
+        self.pixel_spacing = pixel_spacing
 
-    def update_circle_geometry(self, radius):
+        radius_in_real = (radius_in_pixel[0] * pixel_spacing[0], radius_in_pixel[1] * pixel_spacing[1])
+
+        self.update_circle_geometry(radius_in_real)
+
+    def update_circle_geometry(self, radius_in_real):
         """Update the circle geometry to reflect the current radius."""
         self.circle_points.Reset()
         self.circle_lines.Reset()
@@ -52,8 +58,8 @@ class PaintBrush:
         num_segments = 50  # Number of segments for the circle
         for i in range(num_segments):
             angle = 2.0 * math.pi * i / num_segments
-            x = radius * math.cos(angle)
-            y = radius * math.sin(angle)
+            x = radius_in_real[0] * math.cos(angle)
+            y = radius_in_real[1] * math.sin(angle)
             self.circle_points.InsertNextPoint(x, y, 0)
 
             # Connect the points to form a circle
@@ -81,9 +87,15 @@ class PaintBrush:
         scalars = segmentation.GetPointData().GetScalars()
         extent = segmentation.GetExtent()
 
-        for i in range(-self.radius, self.radius + 1):
-            for j in range(-self.radius, self.radius + 1):
-                if i**2 + j**2 <= self.radius**2:  # Circle equation
+        # radius in pixel space
+        radius_in_pixelx = self.radius_in_pixel[0]
+        radius_in_pixely = self.radius_in_pixel[1]
+
+        for i in range(-radius_in_pixelx, radius_in_pixelx + 1):
+            for j in range(-radius_in_pixely, radius_in_pixely + 1):
+                
+                # Check if the pixel is within the circle
+                if ((i/radius_in_pixelx)**2 + (j/radius_in_pixely)**2) <= 1.0:
                     xi = x + i
                     yj = y + j
                     if extent[0] <= xi <= extent[1] and extent[2] <= yj <= extent[3]:
@@ -295,12 +307,6 @@ class VTKViewer(QWidget):
         layout.addWidget(self.vtk_widget)
         self.setLayout(layout)
 
-        # VTK pipeline for image
-        self.image_actor = vtk.vtkImageActor()
-        self.window_level_filter = vtk.vtkImageMapToWindowLevelColors()
-        self.window_level_filter.SetOutputFormatToRGB()
-        self.base_renderer.AddActor(self.image_actor)
-
         # Connect mouse events
         self.interactor.AddObserver("LeftButtonPressEvent", self.on_left_button_press)
         self.interactor.AddObserver("LeftButtonReleaseEvent", self.on_left_button_release)
@@ -309,6 +315,27 @@ class VTKViewer(QWidget):
         self.rulers = []
         self.zooming = Zooming(viewer=self)
         self.panning = Panning(viewer=self)  
+
+    def set_vtk_image(self, vtk_image, window, level):
+
+        self.vtk_image = vtk_image
+                
+        # Connect reader to window/level filter
+        self.window_level_filter = vtk.vtkImageMapToWindowLevelColors()
+        self.window_level_filter.SetOutputFormatToRGB()
+        self.window_level_filter.SetInputData(vtk_image)
+        self.window_level_filter.SetWindow(window)
+        self.window_level_filter.SetLevel(level)
+        self.window_level_filter.Update()
+
+        self.image_actor = vtk.vtkImageActor()
+        self.image_actor.GetMapper().SetInputConnection(self.window_level_filter.GetOutputPort())
+
+        self.get_renderer().AddActor(self.image_actor)
+        
+        self.get_renderer().ResetCamera()
+
+        self.get_render_window().Render()
 
     def get_renderer(self):
         return self.base_renderer
@@ -603,22 +630,6 @@ class VTKViewer(QWidget):
         self.zooming.enable(not self.zooming.enabled)
         
     
-    def paint_at_mouse_position(self):
-        mouse_pos = self.interactor.GetEventPosition()
-        picker = vtk.vtkWorldPointPicker()
-        picker.Pick(mouse_pos[0], mouse_pos[1], 0, self.base_renderer)
-        world_pos = picker.GetPickPosition()
-
-        dims = self.vtk_image.GetDimensions()
-        spacing = self.vtk_image.GetSpacing()
-        origin = self.vtk_image.GetOrigin()
-
-        x = int((world_pos[0] - origin[0]) / spacing[0])
-        y = int((world_pos[1] - origin[1]) / spacing[1])
-
-        self.brush.paint(self.active_segmentation, x, y)
-        self.active_segmentation.Modified()
-        self.render_window.Render()
 
     def toggle_paintbrush(self, enabled):
         """Enable or disable the paintbrush tool."""
@@ -795,12 +806,7 @@ class SegmentationListManager():
         self.brush_active = False
         self.erase_active = False
 
-        self.paintbrush = PaintBrush(radius=10, color= (0,255,0), line_thickness= 1)
-        self.get_mainwindow().vtk_viewer.get_renderer().AddActor(self.paintbrush.get_actor())
-
-        # renderers
-        #self.renderer = SegmentationLayerRenderer(self.segmentation_layers, self.paintbrush, self)
-        
+        self.paintbrush = None
 
         # UI Components
         self.layout = QVBoxLayout()
@@ -835,6 +841,12 @@ class SegmentationListManager():
 
         
 
+    def get_active_layer(self):
+        return self.segmentation_layers.get(self.active_layer_name, None)
+
+
+    def get_mainwindow(self):
+        return self._mainwindow   
 
     def init_ui(self):   
         self.create_paintbrush_toolbar()
@@ -843,57 +855,106 @@ class SegmentationListManager():
 
     def enable_paintbrush(self, enabled=True):
         
+        if self.paintbrush is None:
+            self.paintbrush = PaintBrush()
+            self.paintbrush.set_radius_in_pixel(radius_in_pixel=(20, 20), pixel_spacing=self.vtk_viewer.vtk_image.GetSpacing())
+            self.get_mainwindow().vtk_viewer.get_renderer().AddActor(self.paintbrush.get_actor())
+
         self.paintbrush.enabled = enabled
 
+        interactor = self.vtk_viewer.interactor 
         if enabled:
-            self.left_button_press_observer = self.interactor.AddObserver("LeftButtonPressEvent", self.on_left_button_press)
-            self.mouse_move_observer = self.interactor.AddObserver("MouseMoveEvent", self.on_mouse_move)
-            self.left_button_release_observer = self.interactor.AddObserver("LeftButtonReleaseEvent", self.on_left_button_release)
+            self.left_button_press_observer = interactor.AddObserver("LeftButtonPressEvent", self.on_left_button_press)
+            self.mouse_move_observer = interactor.AddObserver("MouseMoveEvent", self.on_mouse_move)
+            self.left_button_release_observer = interactor.AddObserver("LeftButtonReleaseEvent", self.on_left_button_release)
         else:    
-            self.interactor.RemoveObserver(self.left_button_press_observer)
-            self.interactor.RemoveObserver(self.mouse_move_observer)
-            self.interactor.RemoveObserver(self.left_button_release_observer)   
-            self.last_mouse_position = None
+            interactor.RemoveObserver(self.left_button_press_observer)
+            interactor.RemoveObserver(self.mouse_move_observer)
+            interactor.RemoveObserver(self.left_button_release_observer)   
+        
+        self.left_button_is_pressed = False
+        self.last_mouse_position = None
         
         print(f"Painbrush mode: {'enabled' if enabled else 'disabled'}")
 
+
+    def paint_at_mouse_position(self):
+        
+        vtk_viewer = self.vtk_viewer
+        vtk_image = vtk_viewer.vtk_image
+        
+        mouse_pos = vtk_viewer.interactor.GetEventPosition()
+        picker = vtk.vtkWorldPointPicker()
+        picker.Pick(mouse_pos[0], mouse_pos[1], 0, vtk_viewer.get_renderer())
+        world_pos = picker.GetPickPosition()
+
+        print(f"World position: ({world_pos[0]:.2f}, {world_pos[1]:.2f}, {world_pos[2]:.2f})"
+              f"Mouse position: ({mouse_pos[0]:.2f}, {mouse_pos[1]:.2f})")
+        
+        dims = vtk_image.GetDimensions()
+        spacing = vtk_image.GetSpacing()
+        origin = vtk_image.GetOrigin()
+
+        print(f"Image dimensions: {dims}")
+        print(f"Image spacing: {spacing}")
+        print(f"Image origin: {origin}")
+
+        x = int((world_pos[0] - origin[0]) / spacing[0] + 0.49999999)
+        y = int((world_pos[1] - origin[1]) / spacing[1] + 0.49999999)
+
+
+        if not (0 <= x < dims[0] and 0 <= y < dims[1]):
+            print(f"Point ({x}, {y}) is outside the image bounds.")
+            return
+
+        layer = self.get_active_layer()
+        if layer is None:
+            print("No active layer selected.")
+            return
+
+        self.active_segmentation = layer.segmentation
+        self.paintbrush.paint(self.active_segmentation, x, y)
+        self.active_segmentation.Modified()
+        self.vtk_viewer.get_render_window().Render()
+
     def on_left_button_press(self, obj, event):
-        if not self.enabled:
+        if not self.paintbrush.enabled:
             return
         
         self.left_button_is_pressed = True
-        self.last_mouse_position = self.interactor.GetEventPosition()
+        self.last_mouse_position = self.vtk_viewer.interactor.GetEventPosition()
         
-        if self.enabled and self.active_segmentation:
+        if self.left_button_is_pressed and self.paintbrush.enabled and self.active_layer_name is not None:
+            print('paint...')
             self.paint_at_mouse_position()
         
 
     def on_mouse_move(self, obj, event):
-        if not self.enabled:
+        if not self.paintbrush.enabled:
             return
 
-        if self.painting_enabled:
-            mouse_pos = self.interactor.GetEventPosition()
+        if self.paintbrush.enabled:
+            mouse_pos = self.vtk_viewer.interactor.GetEventPosition()
             picker = vtk.vtkWorldPointPicker()
-            picker.Pick(mouse_pos[0], mouse_pos[1], 0, self.base_renderer)
+            picker.Pick(mouse_pos[0], mouse_pos[1], 0, self.vtk_viewer.get_renderer())
 
             # Get world position
             world_pos = picker.GetPickPosition()
 
             # Update the brush position (ensure Z remains on the image plane + 0.1 to show on top of the image)
-            self.brush_actor.SetPosition(world_pos[0], world_pos[1], world_pos[2] + 0.1)
-            self.brush_actor.SetVisibility(True)  # Make the brush visible
+            self.paintbrush.get_actor().SetPosition(world_pos[0], world_pos[1], world_pos[2] + 0.1)
+            self.paintbrush.get_actor().SetVisibility(True)  # Make the brush visible
 
             # Paint 
-            if self.left_button_is_pressed and self.active_segmentation:
+            if self.left_button_is_pressed and self.paintbrush.enabled and self.active_layer_name is not None:
                 print('paint...')
                 self.paint_at_mouse_position()
         else:
-            self.brush_actor.SetVisibility(False)  # Hide the brush when not painting
+            self.paintbrush.get_actor().SetVisibility(False)  # Hide the brush when not painting
        
 
     def on_left_button_release(self, obj, event):
-        if not self.enabled:
+        if not self.paintbrush.enabled:
             return
         
         self.left_button_is_pressed = False
@@ -930,12 +991,16 @@ class SegmentationListManager():
         toolbar.addAction(self.erase_action)
 
         # paintbrush size slider
-        self.brush_size_slider = LabeledSlider("Brush Size:", initial_value=self.paintbrush.radius)
+        self.brush_size_slider = LabeledSlider("Brush Size:", initial_value=20)
+        self.brush_size_slider.slider.setMinimum(3)
+        self.brush_size_slider.slider.setMaximum(100)
         self.brush_size_slider.slider.valueChanged.connect(self.update_brush_size)
         toolbar.addWidget(self.brush_size_slider)
 
     def update_brush_size(self, value):
-        self.paintbrush.set_radius(value)
+        self.paintbrush.set_radius_in_pixel(
+            radius_in_pixel=(value, value), 
+            pixel_spacing=self.vtk_viewer.get_pixel_spacing())
 
     def create_layer_manager(self):
         
@@ -1048,9 +1113,16 @@ class SegmentationListManager():
 
         # add layer data        
         layer_name = self.generate_unique_layer_name()
-        segmentation = vtk.vtkImageData()
-        segmentation.DeepCopy(self.create_empty_segmentation())
-        actor = self.create_segmentation_actor(segmentation, color=layer_color, alpha=0.8)
+        
+        segmentation = self.create_empty_segmentation()
+        
+        origin = segmentation.GetOrigin()
+        spacing =segmentation.GetSpacing()
+        dim = segmentation.GetDimensions()
+        print("segmentation: origin", origin, "spacing", spacing, "dim", dim)
+
+
+        actor = self.create_segmentation_actor(segmentation, color=(layer_color[0]/255.0, layer_color[1]/255.0, layer_color[2]/255.0), alpha=0.8)
         layer_data = SegmentationLayer(segmentation=segmentation, color=layer_color, alpha=0.8, actor=actor)
         self.segmentation_layers[layer_name] = layer_data
         self.vtk_renderer.AddActor(actor)
@@ -1084,7 +1156,7 @@ class SegmentationListManager():
             self.list_widget_for_segmentation_layers.takeItem(self.list_widget_for_segmentation_layers.row(item))
 
         # render
-        self.get_graphics_view().render_layers()
+        self.vtk_renderer.GetRenderWindow().Render()    
 
     def add_layer(self):
         """Add a new segmentation layer."""
@@ -1252,7 +1324,7 @@ class MainWindow(QMainWindow):
         # Extract correct spacing for RTImage using pydicom
         import pydicom
         dicom_dataset = pydicom.dcmread(dicom_path)
-        if dicom_dataset.Modality == "RTIMAGE":
+        if hasattr(dicom_dataset, "Modality") and dicom_dataset.Modality == "RTIMAGE":
             # Extract necessary tags
             if hasattr(dicom_dataset, "ImagePlanePixelSpacing"):
                 pixel_spacing = dicom_dataset.ImagePlanePixelSpacing  # [row spacing, column spacing]
@@ -1278,6 +1350,10 @@ class MainWindow(QMainWindow):
 
             # Print the updated spacing
             print(f"Updated Spacing: {self.vtk_image.GetSpacing()}")
+        
+        # test
+        #self.vtk_image.SetOrigin(50.0, 50.0, 0.0)
+        #self.vtk_image.SetSpacing(0.5, 0.5, 1.0)  # Column, Row, Depth (0.8, 0.8, 1.0)
 
         # align the center of the image to the center of the world coordiante system
         # Get image properties
@@ -1294,25 +1370,20 @@ class MainWindow(QMainWindow):
         min_intensity, max_intensity = scalar_range
 
         # Dynamically adjust sliders based on intensity range
+        window = int((max_intensity - min_intensity) / 4)
+        level = int((max_intensity + min_intensity) / 2)
+        
+        self.vtk_viewer.set_vtk_image(self.vtk_image, window, level)
+
         self.window_slider.slider.setMinimum(1)
         self.window_slider.slider.setMaximum(int(max_intensity - min_intensity))
-        self.window_slider.slider.setValue(int((max_intensity - min_intensity) / 2))  # Default to half of the range
+        self.window_slider.slider.setValue(window)  # Default to half of the range
 
         self.level_slider.slider.setMinimum(int(min_intensity))
         self.level_slider.slider.setMaximum(int(max_intensity))
-        self.level_slider.slider.setValue(int((max_intensity + min_intensity) / 2))  # Default to the center of the range
-
-        # Connect reader to window/level filter
-        self.vtk_viewer.window_level_filter.SetInputConnection(reader.GetOutputPort())
-        self.vtk_viewer.window_level_filter.SetWindow(self.window_slider.slider.value())
-        self.vtk_viewer.window_level_filter.SetLevel(self.level_slider.slider.value())
-        self.vtk_viewer.window_level_filter.Update()
-
-        # Set the filter output to the actor
-        self.vtk_viewer.image_actor.GetMapper().SetInputConnection(self.vtk_viewer.window_level_filter.GetOutputPort())
-        self.vtk_viewer.get_renderer().ResetCamera()
-
-        self.vtk_viewer.get_render_window().Render()
+        self.level_slider.slider.setValue(level)  # Default to the center of the range
+        
+        
 
     def print_status(self, msg):
         self.status_bar.showMessage(msg)
