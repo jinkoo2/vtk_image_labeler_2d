@@ -401,7 +401,7 @@ class VTKViewer(QWidget):
 
     def add_ruler(self):
         """Add a ruler to the center of the current view and enable interaction."""
-        camera = self.base_renderer.GetActiveCamera()
+        camera = self.get_renderer().GetActiveCamera()
         focal_point = camera.GetFocalPoint()
         view_extent = camera.GetParallelScale()  # Approximate size of the visible area
 
