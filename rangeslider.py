@@ -17,6 +17,13 @@ class RangeSlider(QWidget):
         self.range_max = 100
         self.slider_width = 10
         self.active_handle = None
+        self.bar_dragging = False
+        self.last_mouse_position = None
+
+    def get_center(self):
+        return (self.low_value+self.high_value)/2
+    def get_width(self):
+        return (self.high_value-self.low_value)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -29,8 +36,8 @@ class RangeSlider(QWidget):
         painter.drawRect(0, height // 2 - 5, width, 10)
 
         # Draw range
-        low_pos = int(self.value_to_pos(self.low_value))  # Convert to int
-        high_pos = int(self.value_to_pos(self.high_value))  # Convert to int
+        low_pos = int(self.value_to_pos(self.low_value))
+        high_pos = int(self.value_to_pos(self.high_value))
         painter.setBrush(QColor(100, 100, 255))
         painter.drawRect(low_pos, height // 2 - 5, high_pos - low_pos, 10)
 
@@ -49,54 +56,57 @@ class RangeSlider(QWidget):
             self.slider_width,
         )
 
-        # Add labels for low and high values
-        painter.setPen(QColor(0, 0, 0))  # Black color for text
-        font = painter.font()
-        font.setPointSize(10)
-        painter.setFont(font)
-
-        # Low value label
-        painter.drawText(
-            low_pos - 20,  # Position slightly to the left of the low handle
-            height // 2 - 15,  # Above the handle
-            f"{self.low_value}",
-        )
-
-        # High value label
-        painter.drawText(
-            high_pos + 5,  # Position slightly to the right of the high handle
-            height // 2 - 15,  # Above the handle
-            f"{self.high_value}",
-        )
-        
     def mousePressEvent(self, event):
         pos = event.x()
         low_pos = self.value_to_pos(self.low_value)
         high_pos = self.value_to_pos(self.high_value)
 
-        if abs(pos - low_pos) < self.slider_width:
+        if abs(pos - low_pos) < self.slider_width:  # Clicked near low handle
             self.active_handle = "low"
-            self.rangeChanged.emit(self.low_value, self.high_value)
-        elif abs(pos - high_pos) < self.slider_width:
+        elif abs(pos - high_pos) < self.slider_width:  # Clicked near high handle
             self.active_handle = "high"
-            self.rangeChanged.emit(self.low_value, self.high_value)
+        elif low_pos < pos < high_pos:  # Clicked inside the bar
+            self.bar_dragging = True
+            self.last_mouse_position = pos
+
 
     def mouseMoveEvent(self, event):
-        if self.active_handle is None:
-            return
-
         pos = event.x()
-        value = self.pos_to_value(pos)
 
-        if self.active_handle == "low":
-            self.low_value = max(self.range_min, min(self.high_value, value))
-        elif self.active_handle == "high":
-            self.high_value = min(self.range_max, max(self.low_value, value))
+        if self.active_handle:  # Moving a single handle
+            value = self.pos_to_value(pos)
+            if self.active_handle == "low":
+                new_low_value = max(self.range_min, min(self.high_value, value))
+                if new_low_value != self.low_value:
+                    self.low_value = new_low_value
+                    self.rangeChanged.emit(self.low_value, self.high_value)
+            elif self.active_handle == "high":
+                new_high_value = min(self.range_max, max(self.low_value, value))
+                if new_high_value != self.high_value:
+                    self.high_value = new_high_value
+                    self.rangeChanged.emit(self.low_value, self.high_value)
+
+        elif self.bar_dragging:  # Moving the entire range
+            delta = pos - self.last_mouse_position
+            step = self.pos_to_value(delta) - self.range_min  # Convert pixel movement to value
+            new_low_value = self.low_value + step
+            new_high_value = self.high_value + step
+
+            # Ensure the bar stays within bounds
+            if self.range_min <= new_low_value and new_high_value <= self.range_max:
+                self.low_value = new_low_value
+                self.high_value = new_high_value
+                self.rangeChanged.emit(self.low_value, self.high_value)
+
+            self.last_mouse_position = pos
 
         self.update()
 
+
     def mouseReleaseEvent(self, event):
         self.active_handle = None
+        self.bar_dragging = False
+        self.last_mouse_position = None
 
     def value_to_pos(self, value):
         return (value - self.range_min) / (self.range_max - self.range_min) * self.width()

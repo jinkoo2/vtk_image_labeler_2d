@@ -617,16 +617,6 @@ class VTKViewer(QWidget):
         self.image_actor.SetVisibility(self.base_image_visible)
         self.render_window.Render()
 
-    def update_window_level(self):
-        window = self.window_slider.value()
-        level = self.level_slider.value()
-
-        self.window_level_filter.SetWindow(window)
-        self.window_level_filter.SetLevel(level)
-        self.window_level_filter.Update()
-
-        self.render_window.Render()
-
     def set_active_segmentation(self, segmentation):
         """Set the currently active segmentation layer."""
         self.active_segmentation = segmentation
@@ -1377,23 +1367,14 @@ class MainWindow(QMainWindow):
 
         # Get the scalar range (pixel intensity range)
         scalar_range = self.vtk_image.GetScalarRange()
-        min_intensity, max_intensity = scalar_range
 
-        # Dynamically adjust sliders based on intensity range
-        window = int((max_intensity - min_intensity) / 10)
-        level = int((max_intensity + min_intensity) / 2)
+        self.range_slider.range_min = scalar_range[0]
+        self.range_slider.range_max = scalar_range[1]
+        self.range_slider.low_value = scalar_range[0]
+        self.range_slider.high_value = scalar_range[1]
+        self.range_slider.update()  
         
-        self.vtk_viewer.set_vtk_image(self.vtk_image, window, level)
-
-        self.window_slider.slider.setMinimum(1)
-        self.window_slider.slider.setMaximum(int(max_intensity - min_intensity))
-        self.window_slider.slider.setValue(window)  # Default to half of the range
-
-        self.level_slider.slider.setMinimum(int(min_intensity))
-        self.level_slider.slider.setMaximum(int(max_intensity))
-        self.level_slider.slider.setValue(level)  # Default to the center of the range
-        
-        
+        self.vtk_viewer.set_vtk_image(self.vtk_image, self.range_slider.get_width(), self.range_slider.get_center())
 
     def print_status(self, msg):
         self.status_bar.showMessage(msg)
@@ -1488,18 +1469,14 @@ class MainWindow(QMainWindow):
         toolbar = QToolBar("View Toolbar", self)
         self.addToolBar(Qt.TopToolBarArea, toolbar)
 
-        # window_level_slider - level slider
-        self.window_slider = LabeledSlider("Window Level:")
-        self.window_slider.slider.valueChanged.connect(self.update_window_level)
-        toolbar.addWidget(self.window_slider)
+        # Add a label for context
+        toolbar.addWidget(QLabel("Window/Level:", self))
 
-        # window_level_slider - width slider
-        self.level_slider = LabeledSlider("Window Width:")
-        self.level_slider.slider.valueChanged.connect(self.update_window_level)
-        toolbar.addWidget(self.level_slider)
-
-
-
+        # Replace two QSliders with a RangeSlider for window and level
+        self.range_slider = RangeSlider(self)
+        self.range_slider.setFixedWidth(200)  # Adjust size for the toolbar
+        self.range_slider.rangeChanged.connect(self.update_window_level)
+        toolbar.addWidget(self.range_slider)
         
         # zoom in action
         zoom_in_action = QAction("Zoom In", self)
@@ -1529,8 +1506,6 @@ class MainWindow(QMainWindow):
         plan_action.triggered.connect(self.vtk_viewer.toggle_panning_mode)
         toolbar.addAction(plan_action)        
         
-
-
         # Add ruler toggle action
         add_ruler_action = QAction("Add Ruler", self)
         add_ruler_action.triggered.connect(self.vtk_viewer.add_ruler)
@@ -1538,9 +1513,15 @@ class MainWindow(QMainWindow):
 
     def update_window_level(self):
         if self.vtk_image is not None:
-            self.vtk_viewer.window_level_filter.SetWindow(self.window_slider.slider.value())
-            self.vtk_viewer.window_level_filter.SetLevel(self.level_slider.slider.value())
+            # Update the window and level using the RangeSlider values
+            window = self.range_slider.get_width()
+            level = self.range_slider.get_center()
+
+            self.vtk_viewer.window_level_filter.SetWindow(window)
+            self.vtk_viewer.window_level_filter.SetLevel(level)
             self.vtk_viewer.get_render_window().Render()
+
+            self.print_status(f"Window: {window}, Level: {level}")
 
     def set_default_window_level(self, image_array):
         import numpy as np
@@ -1549,18 +1530,6 @@ class MainWindow(QMainWindow):
         min = np.min(image_array)
         max = np.max(image_array)
 
-        default_level = int((max + min) / 2)
-        default_width = int(max - min)
-
-        self.window_slider.setMinimum(min)
-        self.window_slider.setMaximum(max)
-        self.window_slider.setTickInterval(int(default_width/200))
-        self.window_slider.setValue(default_level)
-            
-        self.level_slider.setMinimum(1)
-        self.level_slider.setMaximum(default_width)
-        self.level_slider.setTickInterval(int(default_width/200))
-        self.level_slider.setValue(default_width)
 
     def open_dicom(self):
         import SimpleITK as sitk
@@ -1607,8 +1576,8 @@ class MainWindow(QMainWindow):
         # Create a metadata dictionary
         workspace_data = {
             "window_settings": {
-                "level": self.window_slider.get_value(),
-                "width": self.level_slider.get_value(),
+                "level": self.range_slider.get_center(),
+                "width": self.range_slider.get_width(),
             }
         }
 
@@ -1666,7 +1635,7 @@ class MainWindow(QMainWindow):
             try:
                 self.sitk_image = sitk.ReadImage(input_image_path)
                 self.image_array = sitk.GetArrayFromImage(self.sitk_image)[0]
-                self.set_default_window_level(self.image_array)  # Call set_default_window_level
+                #self.set_default_window_level(self.image_array)  # Call set_default_window_level
             except Exception as e:
                 self.print_status(f"Failed to load input image: {e}")
                 return
@@ -1676,8 +1645,11 @@ class MainWindow(QMainWindow):
 
         # Restore window settings
         window_settings = workspace_data.get("window_settings", {})
-        self.window_slider.set_value(window_settings.get("level", 0))
-        self.level_slider.set_value(window_settings.get("width", 1))
+        window = window_settings.get("width", 1)
+        level = window_settings.get("level", 0)
+
+        self.range_slider.low_value = level - window / 2
+        self.range_slider.high_value = level + window / 2
 
         # Render the workspace
         if self.image_array is not None:
