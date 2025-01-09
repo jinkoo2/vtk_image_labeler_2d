@@ -845,7 +845,7 @@ class SegmentationListManager():
         self.segmentation_layers = {}
         self.active_layer_name = None
 
-        self.brush_active = False
+        self.paint_active = False
         self.erase_active = False
 
         self.paintbrush = None
@@ -880,6 +880,10 @@ class SegmentationListManager():
         self.paintbrush_button.setCheckable(True)
         self.paintbrush_button.toggled.connect(self.vtk_viewer.toggle_paintbrush)
         self.layout.addWidget(self.paintbrush_button)
+
+   
+    def get_vtk_image(self):
+        return self.vtk_viewer.vtk_image
 
     def render(self):
         self.vtk_renderer.GetRenderWindow().Render()
@@ -958,9 +962,17 @@ class SegmentationListManager():
             return
 
         self.active_segmentation = layer.segmentation
-        self.paintbrush.paint(self.active_segmentation, x, y)
+        
+        # paint or erase
+        if self.paint_active:
+            value = 1
+        else:
+            value = 0
+
+        self.paintbrush.paint(self.active_segmentation, x, y, value)
+        
         self.active_segmentation.Modified()
-        self.vtk_viewer.get_render_window().Render()
+        self.render()
 
     def on_left_button_press(self, obj, event):
         if not self.paintbrush.enabled:
@@ -1020,12 +1032,12 @@ class SegmentationListManager():
         mainwindow.addToolBar(Qt.TopToolBarArea, toolbar)
 
         # Add Brush Tool button
-        self.brush_action = QAction("Brush Tool", mainwindow)
-        self.brush_action.setCheckable(True)  # Make it togglable
-        self.brush_action.setChecked(self.brush_active)  # Sync with initial state
-        self.brush_action.triggered.connect(self.toggle_brush_tool)
-        self.brush_action.setIcon(QIcon(brush_icon_path))
-        toolbar.addAction(self.brush_action)
+        self.paint_action = QAction("Brush Tool", mainwindow)
+        self.paint_action.setCheckable(True)  # Make it togglable
+        self.paint_action.setChecked(self.paint_active)  # Sync with initial state
+        self.paint_action.triggered.connect(self.toggle_brush_tool)
+        self.paint_action.setIcon(QIcon(brush_icon_path))
+        toolbar.addAction(self.paint_action)
 
         # Add Erase Tool button
         self.erase_action = QAction("Erase Tool", mainwindow)
@@ -1045,7 +1057,7 @@ class SegmentationListManager():
     def update_brush_size(self, value):
         self.paintbrush.set_radius_in_pixel(
             radius_in_pixel=(value, value), 
-            pixel_spacing=self.vtk_viewer.get_pixel_spacing())
+            pixel_spacing=self.get_vtk_image().GetSpacing())
 
     def create_layer_manager(self):
         
@@ -1097,25 +1109,25 @@ class SegmentationListManager():
 
     def toggle_brush_tool(self):
         
-        self.brush_active = not self.brush_active
+        self.paint_active = not self.paint_active
 
         self.erase_active = False  # Disable erase tool when brush is active
         self.erase_action.setChecked(False)  # Uncheck the erase button
 
-        self.brush_action.setChecked(self.brush_active)
-        if self.brush_active:
-            self.brush_action.setText("Brush Tool (Active)")
+        self.paint_action.setChecked(self.paint_active)
+        if self.paint_active:
+            self.paint_action.setText("Brush Tool (Active)")
             self.print_status("Brush tool activated")
         else:
-            self.brush_action.setText("Brush Tool (Inactive)")
+            self.paint_action.setText("Brush Tool (Inactive)")
             self.print_status("Brush tool deactivated")
 
-        self.enable_paintbrush(self.brush_active)
+        self.enable_paintbrush(self.paint_active)
 
     def toggle_erase_tool(self):
         self.erase_active = not self.erase_active
-        self.brush_active = False  # Disable brush tool when erase is active
-        self.brush_action.setChecked(False)  # Uncheck the brush button
+        self.paint_active = False  # Disable brush tool when erase is active
+        self.paint_action.setChecked(False)  # Uncheck the brush button
 
         self.erase_action.setChecked(self.erase_active)
         if self.erase_active:
@@ -1709,6 +1721,9 @@ class MainWindow(QMainWindow):
 if __name__ == "__main__":
     import sys
     app = QApplication(sys.argv)
+    
+    app.setWindowIcon(QIcon(brush_icon_path))  # Set application icon
+
     main_window = MainWindow()
     main_window.show()
     sys.exit(app.exec_())
