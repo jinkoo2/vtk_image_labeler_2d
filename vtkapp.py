@@ -438,13 +438,21 @@ class VTKViewer(QWidget):
         # Attach a callback to update distance when the ruler is moved
         line_widget.AddObserver("InteractionEvent", lambda obj, event: self.update_ruler_distance(line_representation))
 
+    def world_to_display(self, renderer, world_coordinates):
+        """Convert world coordinates to display coordinates."""
+        display_coordinates = [0.0, 0.0, 0.0]
+        renderer.SetWorldPoint(*world_coordinates, 1.0)
+        renderer.WorldToDisplay()
+        display_coordinates = renderer.GetDisplayPoint()
+        return display_coordinates
+
     def update_ruler_distance(self, line_representation):
         """Update and display the distance of the ruler."""
         # Check if the line representation already has a text actor
         if not hasattr(line_representation, "text_actor"):
             # Create a text actor if it doesn't exist
             line_representation.text_actor = vtk.vtkTextActor()
-            self.base_renderer.AddActor2D(line_representation.text_actor)
+            self.get_renderer().AddActor2D(line_representation.text_actor)
 
         # Calculate the distance
         point1 = line_representation.GetPoint1WorldPosition()
@@ -458,11 +466,13 @@ class VTKViewer(QWidget):
         print(f"Ruler Distance: {physical_distance:.2f} mm")
 
         # Update the text actor with the new distance
-        midpoint = [(point1[i] + point2[i]) / 2 for i in range(3)]
+        midpoint_w = [(point1[i] + point2[i]) / 2 for i in range(3)]
+        midpoint_screen = self.world_to_display(self.get_renderer(), midpoint_w)
+        
         line_representation.text_actor.SetInput(f"{physical_distance:.2f} mm")
         line_representation.text_actor.GetTextProperty().SetFontSize(14)
         line_representation.text_actor.GetTextProperty().SetColor(1, 1, 1)  # White color
-        line_representation.text_actor.SetPosition(midpoint[0], midpoint[1])
+        line_representation.text_actor.SetPosition(midpoint_screen[0], midpoint_screen[1])
 
         # Render the updates
         self.render_window.Render()
@@ -1280,7 +1290,7 @@ class MainWindow(QMainWindow):
         self.vitk_image = None
 
         # Load a sample DICOM file
-        dicom_file = "W:/RadOnc/Planning/Physics QA/2024/1.Monthly QA/TrueBeamSH/2024_11/imaging/jaw_cal.dcm"
+        dicom_file = "./data/jaw_cal.dcm"
         self.load_dicom(dicom_file)
 
     def init_ui(self):
@@ -1370,7 +1380,7 @@ class MainWindow(QMainWindow):
         min_intensity, max_intensity = scalar_range
 
         # Dynamically adjust sliders based on intensity range
-        window = int((max_intensity - min_intensity) / 4)
+        window = int((max_intensity - min_intensity) / 10)
         level = int((max_intensity + min_intensity) / 2)
         
         self.vtk_viewer.set_vtk_image(self.vtk_image, window, level)
@@ -1472,6 +1482,7 @@ class MainWindow(QMainWindow):
 
     def create_view_toolbar(self):
         from labeled_slider import LabeledSlider
+        from rangeslider import RangeSlider
 
         # Create a toolbar
         toolbar = QToolBar("View Toolbar", self)
@@ -1486,6 +1497,9 @@ class MainWindow(QMainWindow):
         self.level_slider = LabeledSlider("Window Width:")
         self.level_slider.slider.valueChanged.connect(self.update_window_level)
         toolbar.addWidget(self.level_slider)
+
+
+
         
         # zoom in action
         zoom_in_action = QAction("Zoom In", self)
