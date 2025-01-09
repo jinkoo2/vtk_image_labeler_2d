@@ -665,9 +665,13 @@ class SegmentationLayer:
 from line_edit2 import LineEdit2
 
 class LayerItemWidget(QWidget):
-    def __init__(self, layer_name, layer_data, parent_viewer):
+    
+    def get_viewer(self):
+        return self.manager
+    
+    def __init__(self, layer_name, layer_data, manager):
         super().__init__()
-        self.parent_viewer = parent_viewer
+        self.manager = manager
         self.layer_name = layer_name
         self.layer_data = layer_data
 
@@ -685,7 +689,7 @@ class LayerItemWidget(QWidget):
         self.color_patch.setFixedSize(16, 16)  # Small square
         self.color_patch.setStyleSheet(f"background-color: {self.get_layer_color_hex()}; border: 1px solid black;")
         self.color_patch.setCursor(Qt.PointingHandCursor)
-        self.color_patch.mousePressEvent = self.open_color_dialog  # Assign event for color change
+        self.color_patch.mousePressEvent = self.change_color_clicked  # Assign event for color change
         self.layout.addWidget(self.color_patch)
 
         # Label for the layer name
@@ -710,25 +714,57 @@ class LayerItemWidget(QWidget):
     def visible_checkbox_clicked(self, state):
         visibility = state == Qt.Checked
         self.layer_data.visible = visibility
-        self.parent_viewer.on_layer_chagned(self.layer_name)
+        self.layer_data.actor.SetVisibility(visibility)
+        self.manager.on_layer_changed(self.layer_name)
 
     def get_layer_color_hex(self):
         """Convert the layer's color (numpy array) to a hex color string."""
         color = self.layer_data.color
         return f"rgb({color[0]}, {color[1]}, {color[2]})"
 
-    def open_color_dialog(self, event):
+    def change_color_clicked(self, event):
+        
         """Open a color chooser dialog and update the layer's color."""
-        current_color = QColor(self.layer_data.color[0], self.layer_data.color[1], self.layer_data.color[2])
-        new_color = QColorDialog.getColor(current_color, self, "Select Layer Color")
+        # Get the current color in QColor format
+        current_color = QColor(
+            self.layer_data.color[0], 
+            self.layer_data.color[1], 
+            self.layer_data.color[2]
+        )
+        color = QColorDialog.getColor(current_color, self, "Select Layer Color")
 
-        if new_color.isValid():
+        if color.isValid():
+            
+            c = [color.red(), color.green(), color.blue()]
             # Update layer color
-            self.layer_data.color = np.array([new_color.red(), new_color.green(), new_color.blue()])
+            self.layer_data.color = c
             # Update color patch
             self.color_patch.setStyleSheet(f"background-color: {self.get_layer_color_hex()}; border: 1px solid black;")
             # Notify the viewer to update rendering
-            self.parent_viewer.on_layer_chagned(self.layer_name)
+            #self.parent_viewer.on_layer_chagned(self.layer_name)
+            
+            # lookup table of the image actor
+            # Create a lookup table for coloring the segmentation
+            lookup_table = vtk.vtkLookupTable()
+            lookup_table.SetNumberOfTableValues(2)  # For 0 (background) and 1 (segmentation)
+            lookup_table.SetTableRange(0, 1)       # Scalar range
+            lookup_table.SetTableValue(0, 0, 0, 0, 0)  # Background: Transparent
+            lookup_table.SetTableValue(1, c[0]/255, c[1]/255, c[2]/255, self.layer_data.alpha)  # Segmentation: Red with 50% opacity
+            lookup_table.Build()
+            
+            mapper = vtk.vtkImageMapToColors()
+            mapper.SetInputData(self.layer_data.segmentation)
+            mapper.SetLookupTable(lookup_table)
+            mapper.Update()
+
+            actor = self.layer_data.actor
+            actor.GetMapper().SetInputConnection(mapper.GetOutputPort())
+
+            self.manager.on_layer_changed(self.layer_name)
+
+            self.manager.print_status(f"Color changed to ({c[0]}, {c[1]}, {c[2]})")
+
+
 
     def focusOutEvent(self, event):
         """Deactivate the editor when it loses focus."""
@@ -770,7 +806,7 @@ class LayerItemWidget(QWidget):
             return
 
         # Check for uniqueness
-        existing_names = [name for name in self.parent_viewer.segmentation_layers.keys() if name != self.layer_name]
+        existing_names = [name for name in self.manager.segmentation_layers.keys() if name != self.layer_name]
         if new_name in existing_names:
             self.edit_name.setStyleSheet("background-color: rgb(255, 99, 71);")  # Radish color
             self.edit_name.setToolTip("Layer name must be unique.")
@@ -785,7 +821,13 @@ class LayerItemWidget(QWidget):
     def update_layer_name(self, new_name):
         """Update the layer name in the viewer."""
         if new_name != self.layer_name:
-            self.parent_viewer.segmentation_layers[new_name] = self.parent_viewer.segmentation_layers.pop(self.layer_name)
+            
+            self.manager.segmentation_layers[new_name] = self.manager.segmentation_layers.pop(self.layer_name)
+            
+            # if the current layer is the active layer, update the active layer name as well
+            if self.manager.active_layer_name == self.layer_name:
+                self.manager.active_layer_name = new_name
+            
             self.layer_name = new_name
 
 
@@ -839,11 +881,14 @@ class SegmentationListManager():
         self.paintbrush_button.toggled.connect(self.vtk_viewer.toggle_paintbrush)
         self.layout.addWidget(self.paintbrush_button)
 
-        
+    def render(self):
+        self.vtk_renderer.GetRenderWindow().Render()
+
+    def on_layer_changed(self, layer_name):
+        self.render()
 
     def get_active_layer(self):
         return self.segmentation_layers.get(self.active_layer_name, None)
-
 
     def get_mainwindow(self):
         return self._mainwindow   
@@ -1016,9 +1061,9 @@ class SegmentationListManager():
         layer_layout = QVBoxLayout()
 
         # Layer list
-        self.list_widget_for_segmentation_layers = QListWidget()
-        self.list_widget_for_segmentation_layers.currentItemChanged.connect(self.layer_list_widget_on_current_item_changed)
-        layer_layout.addWidget(self.list_widget_for_segmentation_layers)
+        self.list_widget = QListWidget()
+        self.list_widget.currentItemChanged.connect(self.list_widget_on_current_item_changed)
+        layer_layout.addWidget(self.list_widget)
 
         # Buttons to manage layers
         button_layout = QHBoxLayout()
@@ -1037,10 +1082,10 @@ class SegmentationListManager():
         layer_widget.setLayout(layer_layout)
         dock.setWidget(layer_widget)
 
-    def layer_list_widget_on_current_item_changed(self, current, previous):
+    def list_widget_on_current_item_changed(self, current, previous):
         if current:
             # Retrieve the custom widget associated with the current QListWidgetItem
-            item_widget = self.list_widget_for_segmentation_layers.itemWidget(current)
+            item_widget = self.list_widget.itemWidget(current)
             
             if item_widget and isinstance(item_widget, LayerItemWidget):
                 # Access the layer_name from the custom widget
@@ -1092,10 +1137,10 @@ class SegmentationListManager():
 
         # Create a custom widget for the layer
         layer_item_widget = LayerItemWidget(layer_name, layer_data, self)
-        layer_item = QListWidgetItem(self.list_widget_for_segmentation_layers)
+        layer_item = QListWidgetItem(self.list_widget)
         layer_item.setSizeHint(layer_item_widget.sizeHint())
-        self.list_widget_for_segmentation_layers.addItem(layer_item)
-        self.list_widget_for_segmentation_layers.setItemWidget(layer_item, layer_item_widget) # This replaces the default text-based display with the custom widget that includes the checkbox and label.
+        self.list_widget.addItem(layer_item)
+        self.list_widget.setItemWidget(layer_item, layer_item_widget) # This replaces the default text-based display with the custom widget that includes the checkbox and label.
 
         # set the added as active (do I need to indicate this in the list widget?)
         self.active_layer_name = layer_name
@@ -1116,12 +1161,6 @@ class SegmentationListManager():
         
         segmentation = self.create_empty_segmentation()
         
-        origin = segmentation.GetOrigin()
-        spacing =segmentation.GetSpacing()
-        dim = segmentation.GetDimensions()
-        print("segmentation: origin", origin, "spacing", spacing, "dim", dim)
-
-
         actor = self.create_segmentation_actor(segmentation, color=(layer_color[0]/255.0, layer_color[1]/255.0, layer_color[2]/255.0), alpha=0.8)
         layer_data = SegmentationLayer(segmentation=segmentation, color=layer_color, alpha=0.8, actor=actor)
         self.segmentation_layers[layer_name] = layer_data
@@ -1130,19 +1169,25 @@ class SegmentationListManager():
 
         self.add_layer_widget_item(layer_name, layer_data)
 
+        # Select the last item in the list widget (to activate it)
+        if self.list_widget.count() > 0:
+            self.list_widget.setCurrentRow(self.list_widget.count() - 1)
+
+        self.print_status(f'A layer added: {layer_name}, and active layer is now {self.active_layer_name}')
+
 
 
     def remove_layer_clicked(self):
-        if len(self.list_widget_for_segmentation_layers) == 1:
+        if len(self.list_widget) == 1:
                 self.print_status("At least 1 layer is required.")
                 return 
 
-        selected_items = self.list_widget_for_segmentation_layers.selectedItems()
+        selected_items = self.list_widget.selectedItems()
         if not selected_items:
             return
 
         for item in selected_items:
-            widget = self.list_widget_for_segmentation_layers.itemWidget(item)
+            widget = self.list_widget.itemWidget(item)
             layer_name = widget.layer_name
 
             # remove actor
@@ -1153,10 +1198,17 @@ class SegmentationListManager():
             del self.segmentation_layers[layer_name]
 
             # Remove from the list widget
-            self.list_widget_for_segmentation_layers.takeItem(self.list_widget_for_segmentation_layers.row(item))
+            self.list_widget.takeItem(self.list_widget.row(item))
+
+        # Select the last item in the list widget (to activate it)
+        if self.list_widget.count() > 0:
+            self.list_widget.setCurrentRow(self.list_widget.count() - 1)
 
         # render
         self.vtk_renderer.GetRenderWindow().Render()    
+
+        self.print_status(f"Selected layers removed successfully. The acive layer is now {self.active_layer_name}")
+
 
     def add_layer(self):
         """Add a new segmentation layer."""
@@ -1258,10 +1310,7 @@ class SegmentationListManager():
 
         actor = vtk.vtkImageActor()
         actor.GetMapper().SetInputConnection(mapper.GetOutputPort())
-        
-        # Enable blending
-        #actor.SetOpacity(0.5)
-        
+              
         return actor
 
 class MainWindow(QMainWindow):
