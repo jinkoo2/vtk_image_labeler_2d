@@ -16,7 +16,6 @@ class PaintBrush:
         self.pixel_spacing = pixel_spacing
 
         # Paintbrush setup
-        self.active_segmentation = None  # Reference to the active segmentation
         self.enabled = False
 
         # Brush actor for visualization
@@ -617,10 +616,6 @@ class VTKViewer(QWidget):
         self.image_actor.SetVisibility(self.base_image_visible)
         self.render_window.Render()
 
-    def set_active_segmentation(self, segmentation):
-        """Set the currently active segmentation layer."""
-        self.active_segmentation = segmentation
-
     def toggle_panning_mode(self):
         """Enable or disable panning mode."""
         self.panning.enable(not self.panning.enabled)
@@ -853,38 +848,6 @@ class SegmentationListManager():
         # UI Components
         self.layout = QVBoxLayout()
 
-        # List widget to display layers
-        self.list_widget = QListWidget()
-        self.list_widget.itemSelectionChanged.connect(self.on_selection_changed)
-        self.layout.addWidget(self.list_widget)
-
-        # Buttons for managing layers
-        button_layout = QHBoxLayout()
-        self.add_button = QPushButton("Add Layer")
-        self.add_button.clicked.connect(self.add_layer)
-        button_layout.addWidget(self.add_button)
-
-        self.remove_button = QPushButton("Remove Layer")
-        self.remove_button.clicked.connect(self.remove_layer)
-        button_layout.addWidget(self.remove_button)
-
-        self.toggle_button = QPushButton("Toggle Visibility")
-        self.toggle_button.clicked.connect(self.toggle_visibility)
-        button_layout.addWidget(self.toggle_button)
-
-        self.layout.addLayout(button_layout)
-
-
-        # Paintbrush toggle
-        self.paintbrush_button = QPushButton("Enable Paintbrush")
-        self.paintbrush_button.setCheckable(True)
-        self.paintbrush_button.toggled.connect(self.vtk_viewer.toggle_paintbrush)
-        self.layout.addWidget(self.paintbrush_button)
-
-   
-    def get_vtk_image(self):
-        return self.vtk_viewer.vtk_image
-
     def render(self):
         self.vtk_renderer.GetRenderWindow().Render()
 
@@ -961,7 +924,7 @@ class SegmentationListManager():
             print("No active layer selected.")
             return
 
-        self.active_segmentation = layer.segmentation
+        segmentation = layer.segmentation
         
         # paint or erase
         if self.paint_active:
@@ -969,9 +932,9 @@ class SegmentationListManager():
         else:
             value = 0
 
-        self.paintbrush.paint(self.active_segmentation, x, y, value)
+        self.paintbrush.paint(segmentation, x, y, value)
         
-        self.active_segmentation.Modified()
+        segmentation.Modified()
         self.render()
 
     def on_left_button_press(self, obj, event):
@@ -1057,7 +1020,7 @@ class SegmentationListManager():
     def update_brush_size(self, value):
         self.paintbrush.set_radius_in_pixel(
             radius_in_pixel=(value, value), 
-            pixel_spacing=self.get_vtk_image().GetSpacing())
+            pixel_spacing=self.get_base_image().GetSpacing())
 
     def create_layer_manager(self):
         
@@ -1222,38 +1185,6 @@ class SegmentationListManager():
         self.print_status(f"Selected layers removed successfully. The acive layer is now {self.active_layer_name}")
 
 
-    def add_layer(self):
-        """Add a new segmentation layer."""
-        layer_name = f"Segment {len(self.segments) + 1}"
-        segmentation = vtk.vtkImageData()
-        segmentation.DeepCopy(self.create_empty_segmentation())
-
-        self.segments[layer_name] = segmentation
-        self.list_widget.addItem(layer_name)
-
-        # Add the layer actor to the renderer
-        actor = self.create_segmentation_actor(segmentation)
-        self.segments[layer_name] = {'data': segmentation, 'actor': actor}
-        self.vtk_renderer.AddActor(actor)
-
-        self.vtk_renderer.GetRenderWindow().Render()
-        
-        print(f"Added layer: {layer_name}")
-
-    def remove_layer(self):
-        """Remove the selected segmentation layer."""
-        current_item = self.list_widget.currentItem()
-        if current_item:
-            layer_name = current_item.text()
-            self.list_widget.takeItem(self.list_widget.row(current_item))
-
-            # Remove the layer from the renderer
-            actor = self.segments[layer_name]['actor']
-            self.vtk_renderer.RemoveActor(actor)
-            del self.segments[layer_name]
-
-            print(f"Removed layer: {layer_name}")
-
     def toggle_visibility(self):
         """Toggle the visibility of the selected layer."""
         current_item = self.list_widget.currentItem()
@@ -1263,15 +1194,6 @@ class SegmentationListManager():
             visibility = actor.GetVisibility()
             actor.SetVisibility(not visibility)
             print(f"Toggled visibility for layer: {layer_name} (Visible: {not visibility})")
-
-
-    def on_selection_changed(self):
-        current_item = self.list_widget.currentItem()
-        if current_item:
-            layer_name = current_item.text()
-            self.active_layer_name = layer_name
-            segmentation = self.segments[layer_name]['data']
-            self.vtk_viewer.set_active_segmentation(segmentation)
 
     def get_base_image(self):
         return self.vtk_viewer.vtk_image
