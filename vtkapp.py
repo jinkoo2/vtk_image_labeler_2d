@@ -271,7 +271,7 @@ class Zooming:
         self.viewer.get_render_window().Render()
 
 class LineWidget:
-    def __init__(self, vtk_image, pt1_w, pt2_w, color_vtk=[1,0,0], line_width=2, renderer=None):
+    def __init__(self, vtk_image, pt1_w, pt2_w, line_color_vtk=[1,0,0], line_width=2, renderer=None):
         # Create a ruler using vtkLineWidget2
         widget = vtk.vtkLineWidget2()
         representation = vtk.vtkLineRepresentation()
@@ -280,11 +280,13 @@ class LineWidget:
         # Set initial position of the ruler
         representation.SetPoint1WorldPosition(pt1_w)
         representation.SetPoint2WorldPosition(pt2_w)
-        representation.GetLineProperty().SetColor(color_vtk[0],color_vtk[1],color_vtk[2])  
+        representation.GetLineProperty().SetColor(line_color_vtk[0],line_color_vtk[1],line_color_vtk[2])  
         representation.GetLineProperty().SetLineWidth(line_width)
         representation.SetVisibility(True)
 
         representation.text_actor = vtk.vtkTextActor()
+        representation.text_actor.GetTextProperty().SetFontSize(12)
+        representation.text_actor.GetTextProperty().SetColor(1, 1, 1)  # White color
         
         renderer.AddActor2D(representation.text_actor)
 
@@ -298,7 +300,7 @@ class LineWidget:
         self.representation = representation
         self.interactor = interactor
         self.renderer = renderer
-        self.color_vtk = color_vtk
+        self.color_vtk = line_color_vtk
         self.line_width = line_width
         self.vtk_image = vtk_image
 
@@ -308,6 +310,8 @@ class LineWidget:
         # Attach the camera observer
         self.renderer.GetActiveCamera().AddObserver("ModifiedEvent", lambda obj, event: self.update_ruler_distance())
 
+        # Attach the window resize observer
+        self.renderer.GetRenderWindow().AddObserver("WindowResizeEvent", lambda obj, event: self.update_ruler_distance())
 
         self.update_ruler_distance()
     
@@ -321,28 +325,22 @@ class LineWidget:
 
     def update_ruler_distance(self):
 
-        line_representation = self.representation
+        representation = self.representation
 
         # Calculate the distance
-        point1 = line_representation.GetPoint1WorldPosition()
-        point2 = line_representation.GetPoint2WorldPosition()
+        point1 = representation.GetPoint1WorldPosition()
+        point2 = representation.GetPoint2WorldPosition()
         distance = ((point2[0] - point1[0]) ** 2 +
                     (point2[1] - point1[1]) ** 2 +
                     (point2[2] - point1[2]) ** 2) ** 0.5
-        spacing = self.vtk_image.GetSpacing()
-        physical_distance = distance * spacing[0]  # Assuming uniform spacing
 
-        print(f"Ruler Distance: {physical_distance:.2f} mm")
+        print(f"Ruler Distance: {distance:.2f} mm")
 
-        # Update the text actor with the new distance
+        # Update the text actor position 
         midpoint_w = [(point1[i] + point2[i]) / 2 for i in range(3)]
         midpoint_screen = self.world_to_display(self.renderer, midpoint_w)
-        
-        line_representation.text_actor.SetInput(f"{physical_distance:.2f} mm")
-        line_representation.text_actor.GetTextProperty().SetFontSize(14)
-        line_representation.text_actor.GetTextProperty().SetColor(1, 1, 1)  # White color
-        line_representation.text_actor.SetPosition(midpoint_screen[0], midpoint_screen[1])       
-    
+        representation.text_actor.SetInput(f"{distance:.2f} mm")
+        representation.text_actor.SetPosition(midpoint_screen[0], midpoint_screen[1])       
 
 class VTKViewer(QWidget):
     def __init__(self, parent=None):
@@ -486,7 +484,7 @@ class VTKViewer(QWidget):
             vtk_image=self.vtk_image,
             pt1_w=start_point, 
             pt2_w=end_point, 
-            color_vtk=[1,0,0], 
+            line_color_vtk=[1,0,0], 
             line_width=2, 
             renderer=self.get_renderer())
         
@@ -1273,7 +1271,6 @@ class MainWindow(QMainWindow):
         self.segmentation_manager = SegmentationListManager(self.vtk_viewer, self)
         
         self.segmentation_manager.init_ui()
-        
 
         self.vitk_image = None
 
