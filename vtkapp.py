@@ -40,6 +40,10 @@ class PaintBrush:
     def get_actor(self):
         return self.brush_actor
     
+    def set_color(self, color_vtk):
+        if hasattr(self, 'brush_actor') and self.brush_actor is not None:
+            self.brush_actor.GetProperty().SetColor(color_vtk[0], color_vtk[1], color_vtk[2]) 
+
     def set_radius_in_pixel(self, radius_in_pixel, pixel_spacing):
         
         self.radius_in_pixel = radius_in_pixel
@@ -343,9 +347,12 @@ class LineWidget:
         representation.text_actor.SetPosition(midpoint_screen[0], midpoint_screen[1])       
 
 class VTKViewer(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, main_window=None):
         super().__init__(parent)
     
+        if main_window is not None:
+            self.main_window = main_window
+
         background_color = (0.5, 0.5, 0.5)
 
         # Create a VTK Renderer
@@ -385,6 +392,10 @@ class VTKViewer(QWidget):
         self.rulers = []
         self.zooming = Zooming(viewer=self)
         self.panning = Panning(viewer=self)  
+
+    def print_status(self, msg):
+        if self.main_window is not None:
+            self.main_window.print_status(msg)
 
     def set_vtk_image(self, vtk_image, window, level):
 
@@ -498,23 +509,62 @@ class VTKViewer(QWidget):
     def on_left_button_press(self, obj, event):
         self.left_button_is_pressed = True
 
-       
-
     def on_mouse_move(self, obj, event):
-        """Update brush position and optionally paint."""
-        
-
-        
-
+        self.print_mouse_coordiantes()
         self.render_window.Render()
 
+    def print_mouse_coordiantes(self):
+        """Update brush position and print mouse position details when inside the image."""
+        mouse_pos = self.interactor.GetEventPosition()
+
+        # Use a picker to get world coordinates
+        picker = vtk.vtkWorldPointPicker()
+        picker.Pick(mouse_pos[0], mouse_pos[1], 0, self.get_renderer())
+
+        # Get world position
+        world_pos = picker.GetPickPosition()
+
+        # Check if the world position is valid
+        if not picker.GetPickPosition():
+            print("Mouse is outside the render area.")
+            return
+
+        # Get the image data
+        vtk_image = self.vtk_image
+        if not vtk_image:
+            print("No image loaded.")
+            return
+
+        # Get image properties
+        dims = vtk_image.GetDimensions()
+        spacing = vtk_image.GetSpacing()
+        origin = vtk_image.GetOrigin()
+
+        # Convert world coordinates to image index
+        image_index = [
+            int((world_pos[0] - origin[0]) / spacing[0] + 0.5),
+            int((world_pos[1] - origin[1]) / spacing[1] + 0.5),
+            int((world_pos[2] - origin[2]) / spacing[2] + 0.5)
+        ]
+
+        # Check if the index is within bounds
+        if not (0 <= image_index[0] < dims[0] and 0 <= image_index[1] < dims[1] and 0 <= image_index[2] < dims[2]):
+            # Print details
+            self.print_status(f"Point - World: ({world_pos[0]:.2f}, {world_pos[1]:.2f}))")
+            return
+
+        # Get the pixel value
+        scalars = vtk_image.GetPointData().GetScalars()
+        flat_index = image_index[2] * dims[0] * dims[1] + image_index[1] * dims[0] + image_index[0]
+        pixel_value = scalars.GetTuple1(flat_index)
+
+        # Print details
+        self.print_status(f"Point - World: ({world_pos[0]:.2f}, {world_pos[1]:.2f}) Index: ({image_index[0]}, {image_index[1]}), Value: {pixel_value} )")
+        
+        
 
     def on_left_button_release(self, obj, event):
         self.left_button_is_pressed = False
-        
-        
-
-    
 
     def center_image(self):
         
@@ -636,9 +686,7 @@ class VTKViewer(QWidget):
     def toggle_zooming_mode(self):
         """Enable or disable panning mode."""
         self.zooming.enable(not self.zooming.enabled)
-        
-    
-
+  
     def toggle_paintbrush(self, enabled):
         """Enable or disable the paintbrush tool."""
         self.painting_enabled = enabled
@@ -646,7 +694,7 @@ class VTKViewer(QWidget):
         self.render_window.Render()
 
 
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QListWidget, QPushButton, QHBoxLayout
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QListWidget, QPushButton, QToolButton, QHBoxLayout
 import os
 
 # Construct paths to the icons
@@ -838,7 +886,6 @@ class LayerItemWidget(QWidget):
             
             self.layer_name = new_name
 
-
 class SegmentationListManager():
     def __init__(self, vtk_viewer, mainwindow=None):
         
@@ -854,7 +901,10 @@ class SegmentationListManager():
         self.active_layer_name = None
 
         self.paint_active = False
+        self.paint_brush_color = [0,1,0]
+
         self.erase_active = False
+        self.erase_brush_color = [0, 0.5, 1.0]
 
         self.paintbrush = None
 
@@ -960,8 +1010,7 @@ class SegmentationListManager():
         if self.left_button_is_pressed and self.paintbrush.enabled and self.active_layer_name is not None:
             print('paint...')
             self.paint_at_mouse_position()
-        
-
+       
     def on_mouse_move(self, obj, event):
         if not self.paintbrush.enabled:
             return
@@ -978,6 +1027,11 @@ class SegmentationListManager():
             self.paintbrush.get_actor().SetPosition(world_pos[0], world_pos[1], world_pos[2] + 0.1)
             self.paintbrush.get_actor().SetVisibility(True)  # Make the brush visible
 
+            if self.paint_active:
+                self.paintbrush.set_color(self.paint_brush_color)
+            else:
+                self.paintbrush.set_color(self.erase_brush_color)
+
             # Paint 
             if self.left_button_is_pressed and self.paintbrush.enabled and self.active_layer_name is not None:
                 print('paint...')
@@ -985,7 +1039,6 @@ class SegmentationListManager():
         else:
             self.paintbrush.get_actor().SetVisibility(False)  # Hide the brush when not painting
        
-
     def on_left_button_release(self, obj, event):
         if not self.paintbrush.enabled:
             return
@@ -996,6 +1049,24 @@ class SegmentationListManager():
 
     def get_mainwindow(self):
         return self._mainwindow
+    
+    def create_checkable_button(self, label, checked, mainwindow, toolbar, on_click_fn):
+        action = QAction(label, mainwindow)
+        action.setCheckable(True)  # Make it togglable
+        action.setChecked(checked)  # Sync with initial state
+        action.triggered.connect(on_click_fn)
+
+        # Create a QToolButton for the action
+        button = QToolButton(toolbar)
+        button.setCheckable(True)
+        button.setChecked(checked)
+        button.setDefaultAction(action)
+
+        # add to the toolbar
+        toolbar.addWidget(button)
+
+        return action, button
+    
     def create_paintbrush_toolbar(self):
         
         from PyQt5.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QIcon
@@ -1007,21 +1078,9 @@ class SegmentationListManager():
         toolbar = QToolBar("PaintBrush Toolbar",  mainwindow)
         mainwindow.addToolBar(Qt.TopToolBarArea, toolbar)
 
-        # Add Brush Tool button
-        self.paint_action = QAction("Brush Tool", mainwindow)
-        self.paint_action.setCheckable(True)  # Make it togglable
-        self.paint_action.setChecked(self.paint_active)  # Sync with initial state
-        self.paint_action.triggered.connect(self.toggle_brush_tool)
-        self.paint_action.setIcon(QIcon(brush_icon_path))
-        toolbar.addAction(self.paint_action)
-
-        # Add Erase Tool button
-        self.erase_action = QAction("Erase Tool", mainwindow)
-        self.erase_action.setCheckable(True)
-        self.erase_action.setChecked(self.erase_active)
-        self.erase_action.triggered.connect(self.toggle_erase_tool)
-        self.erase_action.setIcon(QIcon(eraser_icon_path))
-        toolbar.addAction(self.erase_action)
+        # Add Paint Tool button
+        self.paint_action, self.paint_button = self.create_checkable_button("Paint", self.paint_active, mainwindow, toolbar, self.toggle_paint_tool)
+        self.erase_action, self.erase_button = self.create_checkable_button("Erase", self.erase_active, mainwindow, toolbar, self.toggle_erase_tool)
 
         # paintbrush size slider
         self.brush_size_slider = LabeledSlider("Brush Size:", initial_value=20)
@@ -1029,6 +1088,13 @@ class SegmentationListManager():
         self.brush_size_slider.slider.setMaximum(100)
         self.brush_size_slider.slider.valueChanged.connect(self.update_brush_size)
         toolbar.addWidget(self.brush_size_slider)
+
+    def update_button_style(self, button, checked):
+        """Update the button's style to dim or brighten the icon."""
+        if checked:
+            button.setStyleSheet("QToolButton { opacity: 1.0; }")  # Normal icon
+        else:
+            button.setStyleSheet("QToolButton { opacity: 0.5; }")  # Dimmed icon
 
     def update_brush_size(self, value):
         self.paintbrush.set_radius_in_pixel(
@@ -1083,36 +1149,38 @@ class SegmentationListManager():
                     self.print_status(f"Layer {layer_name} selected")
                     
 
-    def toggle_brush_tool(self):
+    def toggle_paint_tool(self):
         
         self.paint_active = not self.paint_active
+        self.paint_action.setChecked(self.paint_active)  # Uncheck the erase button
 
+        # turn off erase action
         self.erase_active = False  # Disable erase tool when brush is active
         self.erase_action.setChecked(False)  # Uncheck the erase button
 
-        self.paint_action.setChecked(self.paint_active)
         if self.paint_active:
-            self.paint_action.setText("Brush Tool (Active)")
-            self.print_status("Brush tool activated")
+            self.print_status("Paint tool activated")
         else:
-            self.paint_action.setText("Brush Tool (Inactive)")
-            self.print_status("Brush tool deactivated")
+            self.print_status("Paint tool deactivated")
 
-        self.enable_paintbrush(self.paint_active)
+        self.enable_paintbrush(self.paint_active or self.erase_active)
 
     def toggle_erase_tool(self):
+        
+        # toggle erase
         self.erase_active = not self.erase_active
+        self.erase_action.setChecked(self.erase_active)
+        
+        # turn off paint action
         self.paint_active = False  # Disable brush tool when erase is active
         self.paint_action.setChecked(False)  # Uncheck the brush button
 
-        self.erase_action.setChecked(self.erase_active)
         if self.erase_active:
-            self.erase_action.setText("Erase Tool (Active)")
             self.print_status("Erase tool activated")
         else:
-            self.erase_action.setText("Erase Tool (Inactive)")
             self.print_status("Erase tool deactivated")    
-          
+
+        self.enable_paintbrush(self.paint_active or self.erase_active)
 
     def get_status_bar(self):
         return self._mainwindow.status_bar
@@ -1286,7 +1354,7 @@ class MainWindow(QMainWindow):
         self.layout = QVBoxLayout()
 
         # VTK Viewer
-        self.vtk_viewer = VTKViewer(self)
+        self.vtk_viewer = VTKViewer(parent = self, main_window = self)
         self.layout.addWidget(self.vtk_viewer)
 
         self.main_widget.setLayout(self.layout)
@@ -1385,7 +1453,6 @@ class MainWindow(QMainWindow):
         # Add View menu
         view_menu = menubar.addMenu("View")
         self.create_view_menu(view_menu)
-
 
     def create_file_menu(self, file_menu):
         
