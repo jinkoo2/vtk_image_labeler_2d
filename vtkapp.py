@@ -270,6 +270,79 @@ class Zooming:
         # Render the updated scene
         self.viewer.get_render_window().Render()
 
+class LineWidget:
+    def __init__(self, vtk_image, pt1_w, pt2_w, color_vtk=[1,0,0], line_width=2, renderer=None):
+        # Create a ruler using vtkLineWidget2
+        widget = vtk.vtkLineWidget2()
+        representation = vtk.vtkLineRepresentation()
+        widget.SetRepresentation(representation)
+
+        # Set initial position of the ruler
+        representation.SetPoint1WorldPosition(pt1_w)
+        representation.SetPoint2WorldPosition(pt2_w)
+        representation.GetLineProperty().SetColor(color_vtk[0],color_vtk[1],color_vtk[2])  
+        representation.GetLineProperty().SetLineWidth(line_width)
+        representation.SetVisibility(True)
+
+        representation.text_actor = vtk.vtkTextActor()
+        
+        renderer.AddActor2D(representation.text_actor)
+
+        interactor = renderer.GetRenderWindow().GetInteractor()
+
+        # Set interactor and enable interaction
+        if interactor:
+            widget.SetInteractor(interactor)
+
+        self.widget = widget
+        self.representation = representation
+        self.interactor = interactor
+        self.renderer = renderer
+        self.color_vtk = color_vtk
+        self.line_width = line_width
+        self.vtk_image = vtk_image
+
+        # Attach a callback to update distance when the ruler is moved
+        widget.AddObserver("InteractionEvent", lambda obj, event: self.update_ruler_distance())
+
+        # Attach the camera observer
+        self.renderer.GetActiveCamera().AddObserver("ModifiedEvent", lambda obj, event: self.update_ruler_distance())
+
+
+        self.update_ruler_distance()
+    
+    def world_to_display(self, renderer, world_coordinates):
+        """Convert world coordinates to display coordinates."""
+        display_coordinates = [0.0, 0.0, 0.0]
+        renderer.SetWorldPoint(*world_coordinates, 1.0)
+        renderer.WorldToDisplay()
+        display_coordinates = renderer.GetDisplayPoint()
+        return display_coordinates
+
+    def update_ruler_distance(self):
+
+        line_representation = self.representation
+
+        # Calculate the distance
+        point1 = line_representation.GetPoint1WorldPosition()
+        point2 = line_representation.GetPoint2WorldPosition()
+        distance = ((point2[0] - point1[0]) ** 2 +
+                    (point2[1] - point1[1]) ** 2 +
+                    (point2[2] - point1[2]) ** 2) ** 0.5
+        spacing = self.vtk_image.GetSpacing()
+        physical_distance = distance * spacing[0]  # Assuming uniform spacing
+
+        print(f"Ruler Distance: {physical_distance:.2f} mm")
+
+        # Update the text actor with the new distance
+        midpoint_w = [(point1[i] + point2[i]) / 2 for i in range(3)]
+        midpoint_screen = self.world_to_display(self.renderer, midpoint_w)
+        
+        line_representation.text_actor.SetInput(f"{physical_distance:.2f} mm")
+        line_representation.text_actor.GetTextProperty().SetFontSize(14)
+        line_representation.text_actor.GetTextProperty().SetColor(1, 1, 1)  # White color
+        line_representation.text_actor.SetPosition(midpoint_screen[0], midpoint_screen[1])       
+    
 
 class VTKViewer(QWidget):
     def __init__(self, parent=None):
@@ -398,7 +471,6 @@ class VTKViewer(QWidget):
         clipping_range = camera.GetClippingRange()
         print(f"Clipping Range: {clipping_range}")
 
-
     def add_ruler(self):
         """Add a ruler to the center of the current view and enable interaction."""
         camera = self.get_renderer().GetActiveCamera()
@@ -409,78 +481,21 @@ class VTKViewer(QWidget):
         start_point = [focal_point[0] - view_extent / 6, focal_point[1], focal_point[2]]
         end_point = [focal_point[0] + view_extent / 6, focal_point[1], focal_point[2]]
 
-        print('start_point: ', start_point)
-        print('end_point: ', end_point)
-
         # Create a ruler using vtkLineWidget2
-        line_widget = vtk.vtkLineWidget2()
-        line_representation = vtk.vtkLineRepresentation()
-        line_widget.SetRepresentation(line_representation)
-
-        # Set initial position of the ruler
-        line_representation.SetPoint1WorldPosition(start_point)
-        line_representation.SetPoint2WorldPosition(end_point)
-        line_representation.GetLineProperty().SetColor(1, 0, 0)  # Red color
-        line_representation.GetLineProperty().SetLineWidth(2)
-        line_representation.SetVisibility(True)
-
-        # Set interactor and enable interaction
-        line_widget.SetInteractor(self.render_window.GetInteractor())
-        line_widget.On()
+        line_widget = LineWidget(
+            vtk_image=self.vtk_image,
+            pt1_w=start_point, 
+            pt2_w=end_point, 
+            color_vtk=[1,0,0], 
+            line_width=2, 
+            renderer=self.get_renderer())
+        
+        line_widget.widget.On()
 
         # Add the ruler to the list for management
         self.rulers.append(line_widget)
 
-        # Calculate and display the initial distance
-        self.update_ruler_distance(line_representation)
-
-        # Attach a callback to update distance when the ruler is moved
-        line_widget.AddObserver("InteractionEvent", lambda obj, event: self.update_ruler_distance(line_representation))
-
-    def world_to_display(self, renderer, world_coordinates):
-        """Convert world coordinates to display coordinates."""
-        display_coordinates = [0.0, 0.0, 0.0]
-        renderer.SetWorldPoint(*world_coordinates, 1.0)
-        renderer.WorldToDisplay()
-        display_coordinates = renderer.GetDisplayPoint()
-        return display_coordinates
-
-    def update_ruler_distance(self, line_representation):
-        """Update and display the distance of the ruler."""
-        # Check if the line representation already has a text actor
-        if not hasattr(line_representation, "text_actor"):
-            # Create a text actor if it doesn't exist
-            line_representation.text_actor = vtk.vtkTextActor()
-            self.get_renderer().AddActor2D(line_representation.text_actor)
-
-        # Calculate the distance
-        point1 = line_representation.GetPoint1WorldPosition()
-        point2 = line_representation.GetPoint2WorldPosition()
-        distance = ((point2[0] - point1[0]) ** 2 +
-                    (point2[1] - point1[1]) ** 2 +
-                    (point2[2] - point1[2]) ** 2) ** 0.5
-        spacing = self.vtk_image.GetSpacing()
-        physical_distance = distance * spacing[0]  # Assuming uniform spacing
-
-        print(f"Ruler Distance: {physical_distance:.2f} mm")
-
-        # Update the text actor with the new distance
-        midpoint_w = [(point1[i] + point2[i]) / 2 for i in range(3)]
-        midpoint_screen = self.world_to_display(self.get_renderer(), midpoint_w)
-        
-        line_representation.text_actor.SetInput(f"{physical_distance:.2f} mm")
-        line_representation.text_actor.GetTextProperty().SetFontSize(14)
-        line_representation.text_actor.GetTextProperty().SetColor(1, 1, 1)  # White color
-        line_representation.text_actor.SetPosition(midpoint_screen[0], midpoint_screen[1])
-
-        # Render the updates
-        self.render_window.Render()
-        
-    
-
-        
-
-        self.render_window.Render()
+        self.get_render_window().Render()
 
     def on_left_button_press(self, obj, event):
         self.left_button_is_pressed = True
