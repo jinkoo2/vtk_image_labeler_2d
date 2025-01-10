@@ -1,0 +1,18 @@
+{
+    "window_settings": {
+        "level": 32792.0,
+        "width": 65484.0
+    },
+    "segmentation_layers": {
+        "Layer 1": {
+            "file": "Layer 1.mha",
+            "visible": true,
+            "color": [
+                255,
+                0,
+                0
+            ],
+            "alpha": 0.8
+        }
+    }
+}

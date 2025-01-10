@@ -10,6 +10,13 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtWidgets import QWidget, QHBoxLayout, QCheckBox, QLabel, QListWidgetItem, QColorDialog
 from PyQt5.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QIcon
 
+def to_vtk_color(c):
+    return [c[0]/255, c[1]/255, c[2]/255]
+
+def from_vtk_color(c):
+    return [int(c[0]*255), int(c[1]*255), int(c[2]*255)]
+
+
 class PaintBrush:
     def __init__(self, radius_in_pixel=(20,20), pixel_spacing=(1.0, 1.0), color= (0,255,0), line_thickness= 1):
         self.radius_in_pixel = radius_in_pixel
@@ -393,11 +400,22 @@ class VTKViewer(QWidget):
         self.zooming = Zooming(viewer=self)
         self.panning = Panning(viewer=self)  
 
+    def clear(self):
+        # Remove the previous image actor if it exists
+        if hasattr(self, 'image_actor') and self.image_actor is not None:
+            self.get_renderer().RemoveActor(self.image_actor)
+            self.image_actor = None
+
+        self.vtk_image = None
+
     def print_status(self, msg):
         if self.main_window is not None:
             self.main_window.print_status(msg)
 
     def set_vtk_image(self, vtk_image, window, level):
+
+        # reset first
+        self.clear()
 
         self.vtk_image = vtk_image
                 
@@ -911,6 +929,84 @@ class SegmentationListManager():
         # UI Components
         self.layout = QVBoxLayout()
 
+
+
+    def save_segmentation_layer(self, segmentation, file_path):
+
+        # Expand 2D segmentation into 3D (single slice)
+        #segmentation_3d = np.expand_dims(segmentation, axis=0)
+        #segmentation_image = sitk.GetImageFromArray(segmentation_3d)
+
+        # Copy spatial metadata from the base
+        #segmentation_image.CopyInformation(self.sitk_image)
+
+        # Save the segmentation as .mha
+        #sitk.WriteImage(segmentation_image, file_path,useCompression=True)
+
+        from itkvtk import save_vtk_image_using_sitk
+        save_vtk_image_using_sitk(segmentation, file_path)
+
+
+    def save_state(self,data_dict, data_dir):
+        # Save segmentation layers as '.mha'
+        data_dict["segmentation_layers"] = {}
+
+        for layer_name, layer_data in self.segmentation_layers.items():
+            segmentation_file = f"{layer_name}.mhd"
+            segmentation_path = os.path.join(data_dir, segmentation_file )
+            self.save_segmentation_layer(layer_data.segmentation, segmentation_path)
+
+            # Add layer metadata to the workspace data
+            data_dict["segmentation_layers"][layer_name] = {
+                "file": segmentation_file,
+                "visible": layer_data.visible,
+                "color": list(layer_data.color),
+                "alpha": layer_data.alpha,
+            }
+
+    def clear(self):
+        
+        # remove actors
+        for layer_name, layer_data in self.segmentation_layers.items():
+            print(f"removing actor of layer {layer_name}")
+            actor = layer_data.actor
+            self.vtk_renderer.RemoveActor(actor)    
+        
+        self.vtk_image = None
+        self.segmentation_layers.clear()
+        self.list_widget.clear()
+
+    def load_state(self, data_dict, data_dir, aux_data):
+        import os
+
+        self.clear()
+
+        self.vtk_image = aux_data['base_image']
+
+        # Load segmentation layers
+        from itkvtk import load_vtk_image_using_sitk
+        for layer_name, layer_metadata in data_dict.get("segmentation_layers", {}).items():
+            seg_path = os.path.join(data_dir, layer_metadata["file"])
+            if os.path.exists(seg_path):
+                try:
+                    vtk_seg = load_vtk_image_using_sitk(seg_path)
+
+                    self.add_layer(
+                        segmentation=vtk_seg,
+                        layer_name=layer_name,
+                        color_vtk=to_vtk_color(layer_metadata["color"]),
+                        alpha=layer_metadata["alpha"]
+                    )
+                    
+                except Exception as e:
+                    self.print_status(f"Failed to load segmentation layer {layer_name}: {e}")
+            else:
+                self.print_status(f"Segmentation file for layer {layer_name} not found.")
+
+
+
+
+
     def render(self):
         self.vtk_renderer.GetRenderWindow().Render()
 
@@ -1207,18 +1303,9 @@ class SegmentationListManager():
             index += 1
         return f"{base_name} {index}"
     
-    def add_layer_clicked(self):
-
-        # Generate a random bright color for the new layer
-        layer_color = color_rotator.next()
-
-        # add layer data        
-        layer_name = self.generate_unique_layer_name()
-        
-        segmentation = self.create_empty_segmentation()
-        
-        actor = self.create_segmentation_actor(segmentation, color=(layer_color[0]/255.0, layer_color[1]/255.0, layer_color[2]/255.0), alpha=0.8)
-        layer_data = SegmentationLayer(segmentation=segmentation, color=layer_color, alpha=0.8, actor=actor)
+    def add_layer(self, segmentation, layer_name, color_vtk, alpha):
+        actor = self.create_segmentation_actor(segmentation, color=color_vtk, alpha=alpha)
+        layer_data = SegmentationLayer(segmentation=segmentation, color=from_vtk_color(color_vtk), alpha=alpha, actor=actor)
         self.segmentation_layers[layer_name] = layer_data
         self.vtk_renderer.AddActor(actor)
         self.vtk_renderer.GetRenderWindow().Render()
@@ -1229,9 +1316,26 @@ class SegmentationListManager():
         if self.list_widget.count() > 0:
             self.list_widget.setCurrentRow(self.list_widget.count() - 1)
 
+
+    def add_layer_clicked(self):
+
+        # Generate a random bright color for the new layer
+        layer_color = color_rotator.next()
+
+        # add layer data        
+        layer_name = self.generate_unique_layer_name()
+        
+        # empty segmentation
+        segmentation = self.create_empty_segmentation()
+
+        self.add_layer(
+            segmentation=segmentation, 
+            layer_name=layer_name, 
+            color_vtk=[layer_color[0]/255, layer_color[1]/255, layer_color[2]/255],
+            alpha=0.8)
+        
         self.print_status(f'A layer added: {layer_name}, and active layer is now {self.active_layer_name}')
-
-
+        
 
     def remove_layer_clicked(self):
         if len(self.list_widget) == 1:
@@ -1336,15 +1440,15 @@ class MainWindow(QMainWindow):
         self.init_ui()
 
         # Segmentation Manager
-        self.segmentation_manager = SegmentationListManager(self.vtk_viewer, self)
+        self.segmentation_list_manager = SegmentationListManager(self.vtk_viewer, self)
         
-        self.segmentation_manager.init_ui()
+        self.segmentation_list_manager.init_ui()
 
         self.vitk_image = None
 
         # Load a sample DICOM file
-        dicom_file = "./data/jaw_cal.dcm"
-        self.load_dicom(dicom_file)
+        #dicom_file = "./data/jaw_cal.dcm"
+        #self.load_dicom(dicom_file)
 
     def init_ui(self):
         self.setWindowTitle("Image Labeler 2D")
@@ -1382,7 +1486,6 @@ class MainWindow(QMainWindow):
             return
 
         self.vtk_image = reader.GetOutput()
-        self.vtk_viewer.vtk_image = self.vtk_image
 
         # Extract correct spacing for RTImage using pydicom
         import pydicom
@@ -1621,7 +1724,7 @@ class MainWindow(QMainWindow):
         from PyQt5.QtWidgets import QFileDialog
 
         """Save the current workspace to a folder."""
-        if self.image_array is None:
+        if self.vtk_image is None:
             self.print_status("No image loaded. Cannot save workspace.")
             return
 
@@ -1640,18 +1743,21 @@ class MainWindow(QMainWindow):
             "window_settings": {
                 "level": self.range_slider.get_center(),
                 "width": self.range_slider.get_width(),
+                "range_min" : self.range_slider.range_min,
+                "range_max" : self.range_slider.range_max
             }
         }
 
         # Save input image as '.mha'
-        input_image_path = os.path.join(data_dir, "input_image.mha")
-        sitk.WriteImage(self.sitk_image, input_image_path, useCompression=True)
-
+        from itkvtk import save_vtk_image_using_sitk
+        input_image_path = os.path.join(data_dir, "input_image.mhd")
+        save_vtk_image_using_sitk(self.vtk_image, input_image_path)
+        
         #save segmentation layers
         self.segmentation_list_manager.save_state(workspace_data, data_dir)
 
         # Save points metadata
-        self.point_list_manager.save_state(workspace_data, data_dir)
+        #self.point_list_manager.save_state(workspace_data, data_dir)
 
         # Save metadata as 'workspace.json'
         with open(workspace_json_path, "w") as f:
@@ -1659,12 +1765,13 @@ class MainWindow(QMainWindow):
 
         self.print_status(f"Workspace saved to {workspace_json_path}.")
 
+
     def load_workspace(self):
         import json
         import os
 
         """Load a workspace from a folder."""
-        init_dir = "W:/RadOnc/Planning/Physics QA/2024/1.Monthly QA/TrueBeamSH/2024_11/imaging"
+        init_dir = "."
         workspace_json_path, _ = QFileDialog.getOpenFileName(self, "Select Workspace File", init_dir, "JSON Files (*.json)")
         if not workspace_json_path:
            return
@@ -1687,35 +1794,40 @@ class MainWindow(QMainWindow):
             return
 
         # Clear existing workspace
-        self.image_array = None
-        self.sitk_image = None
-        self.point_list_manager.points.clear()
+        self.vtk_image = None
+        #self.point_list_manager.points.clear()
+
+        from itkvtk import load_vtk_image_using_sitk
 
         # Load input image
-        input_image_path = os.path.join(data_path, "input_image.mha")
+        input_image_path = os.path.join(data_path, "input_image.mhd")
         if os.path.exists(input_image_path):
             try:
-                self.sitk_image = sitk.ReadImage(input_image_path)
-                self.image_array = sitk.GetArrayFromImage(self.sitk_image)[0]
+                self.vtk_image = load_vtk_image_using_sitk(input_image_path)
                 #self.set_default_window_level(self.image_array)  # Call set_default_window_level
             except Exception as e:
                 self.print_status(f"Failed to load input image: {e}")
                 return
-
-        self.segmentation_list_manager.load_state(workspace_data, data_path, {'base_image': self.sitk_image})
-        self.point_list_manager.load_state(workspace_data, data_path, {'base_image': self.sitk_image})
 
         # Restore window settings
         window_settings = workspace_data.get("window_settings", {})
         window = window_settings.get("width", 1)
         level = window_settings.get("level", 0)
 
-        self.range_slider.low_value = level - window / 2
-        self.range_slider.high_value = level + window / 2
+        # Get the scalar range (pixel intensity range)
+        scalar_range = self.vtk_image.GetScalarRange()
 
-        # Render the workspace
-        if self.image_array is not None:
-            self.graphics_view.render_layers()
+        self.range_slider.range_min = scalar_range[0]
+        self.range_slider.range_max = scalar_range[1]
+        self.range_slider.low_value = level-window/2
+        self.range_slider.high_value = level+window/2
+        self.range_slider.update()  
+
+        self.vtk_viewer.set_vtk_image(self.vtk_image, window, level)
+
+
+        self.segmentation_list_manager.load_state(workspace_data, data_path, {'base_image': self.vtk_image})
+        #self.point_list_manager.load_state(workspace_data, data_path, {'base_image': self.sitk_image})
 
         self.print_status(f"Workspace loaded from {data_path}.")
 
