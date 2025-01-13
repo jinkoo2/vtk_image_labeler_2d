@@ -926,6 +926,110 @@ class SegmentationListManager():
 
         self.paintbrush = None
 
+    def setup_ui(self):   
+        toolbar = self.create_toolbar()
+        dock = self.create_dock_widget()
+        return toolbar, dock
+
+    def create_toolbar(self):
+        
+        from PyQt5.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QIcon
+        from labeled_slider import LabeledSlider
+
+        mainwindow = self.get_mainwindow()
+
+        # Create a toolbar
+        toolbar = QToolBar("PaintBrush Toolbar")
+        
+
+        # Add Paint Tool button
+        self.paint_action, self.paint_button = self.create_checkable_button("Paint", self.paint_active, mainwindow, toolbar, self.toggle_paint_tool)
+        self.erase_action, self.erase_button = self.create_checkable_button("Erase", self.erase_active, mainwindow, toolbar, self.toggle_erase_tool)
+
+        # paintbrush size slider
+        self.brush_size_slider = LabeledSlider("Brush Size:", initial_value=20)
+        self.brush_size_slider.slider.setMinimum(3)
+        self.brush_size_slider.slider.setMaximum(100)
+        self.brush_size_slider.slider.valueChanged.connect(self.update_brush_size)
+        toolbar.addWidget(self.brush_size_slider)
+
+        return toolbar
+    
+    def create_dock_widget(self):
+        
+        mainwindow = self.get_mainwindow()
+        
+        # Create a dockable widget
+        dock = QDockWidget("Segmentation Layer Manager ")
+
+
+        # Layer manager layout
+        layer_widget = QWidget()
+        layer_layout = QVBoxLayout()
+
+        # Layer list
+        self.list_widget = QListWidget()
+        self.list_widget.currentItemChanged.connect(self.list_widget_on_current_item_changed)
+        layer_layout.addWidget(self.list_widget)
+
+        # Buttons to manage layers
+        button_layout = QHBoxLayout()
+
+        add_layer_button = QPushButton("Add Layer")
+        add_layer_button.clicked.connect(self.add_layer_clicked)
+        button_layout.addWidget(add_layer_button)
+
+        remove_layer_button = QPushButton("Remove Layer")
+        remove_layer_button.clicked.connect(self.remove_layer_clicked)
+        button_layout.addWidget(remove_layer_button)
+
+        # Add the button layout at the top
+        layer_layout.addLayout(button_layout)
+        # Set layout for the layer manager
+        layer_widget.setLayout(layer_layout)
+        dock.setWidget(layer_widget)
+
+
+        return dock
+
+    def get_exclusive_actions(self):
+        return [self.paint_action, self.erase_action]
+        
+    def create_list_item_widget(self):
+        mainwindow = self.get_mainwindow()
+        
+        # Create a dockable widget
+        dock = QDockWidget("Segmentation Layer Manager", parent=mainwindow)
+        mainwindow.addDockWidget(Qt.RightDockWidgetArea, dock)
+
+        # Create a parent widget for the dock
+        dock_widget = QWidget()
+        dock_layout = QVBoxLayout()
+        dock_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Create a toolbar for segmentation list actions
+        toolbar = QToolBar("Layer Actions Toolbar", self.get_mainwindow())
+        toolbar.setOrientation(Qt.Horizontal)  # Horizontal toolbar
+
+        self.add_layer_action = QAction("Add Layer")
+        self.add_layer_action.triggered.connect(self.add_layer_clicked)
+        toolbar.addAction(self.add_layer_action)
+
+        self.remove_layer_action = QAction("Remove Layer")
+        self.remove_layer_action.triggered.connect(self.remove_layer_clicked)
+        toolbar.addAction(self.remove_layer_action)
+
+
+        dock_layout.addWidget(toolbar)  # Add toolbar to the top of the dock
+
+        # Layer list
+        self.list_widget = QListWidget()
+        self.list_widget.currentItemChanged.connect(self.list_widget_on_current_item_changed)
+        dock_layout.addWidget(self.list_widget)
+
+        # Set the layout for the dock widget
+        dock_widget.setLayout(dock_layout)
+        dock.setWidget(dock_widget)
 
     def clear(self):
         
@@ -954,7 +1058,6 @@ class SegmentationListManager():
         from itkvtk import save_vtk_image_using_sitk
         save_vtk_image_using_sitk(segmentation, file_path)
 
-
     def save_state(self,data_dict, data_dir):
         # Save segmentation layers as '.mha'
         data_dict["segmentation_layers"] = {}
@@ -971,8 +1074,6 @@ class SegmentationListManager():
                 "color": list(layer_data.color),
                 "alpha": layer_data.alpha,
             }
-
-    
 
     def load_state(self, data_dict, data_dir, aux_data):
         import os
@@ -1001,10 +1102,6 @@ class SegmentationListManager():
             else:
                 self.print_status(f"Segmentation file for layer {layer_name} not found.")
 
-
-
-
-
     def render(self):
         self.vtk_renderer.GetRenderWindow().Render()
 
@@ -1016,10 +1113,6 @@ class SegmentationListManager():
 
     def get_mainwindow(self):
         return self._mainwindow   
-
-    def init_ui(self):   
-        self.create_paintbrush_toolbar()
-        self.create_layer_manager()
 
 
     def enable_paintbrush(self, enabled=True):
@@ -1140,7 +1233,6 @@ class SegmentationListManager():
         self.left_button_is_pressed = False
         self.last_mouse_position = None
 
-
     def get_mainwindow(self):
         return self._mainwindow
     
@@ -1160,29 +1252,7 @@ class SegmentationListManager():
         toolbar.addWidget(button)
 
         return action, button
-    
-    def create_paintbrush_toolbar(self):
-        
-        from PyQt5.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QIcon
-        from labeled_slider import LabeledSlider
-
-        mainwindow = self.get_mainwindow()
-
-        # Create a toolbar
-        toolbar = QToolBar("PaintBrush Toolbar",  mainwindow)
-        mainwindow.addToolBar(Qt.TopToolBarArea, toolbar)
-
-        # Add Paint Tool button
-        self.paint_action, self.paint_button = self.create_checkable_button("Paint", self.paint_active, mainwindow, toolbar, self.toggle_paint_tool)
-        self.erase_action, self.erase_button = self.create_checkable_button("Erase", self.erase_active, mainwindow, toolbar, self.toggle_erase_tool)
-
-        # paintbrush size slider
-        self.brush_size_slider = LabeledSlider("Brush Size:", initial_value=20)
-        self.brush_size_slider.slider.setMinimum(3)
-        self.brush_size_slider.slider.setMaximum(100)
-        self.brush_size_slider.slider.valueChanged.connect(self.update_brush_size)
-        toolbar.addWidget(self.brush_size_slider)
-
+ 
     def update_button_style(self, button, checked):
         """Update the button's style to dim or brighten the icon."""
         if checked:
@@ -1195,40 +1265,6 @@ class SegmentationListManager():
             radius_in_pixel=(value, value), 
             pixel_spacing=self.get_base_image().GetSpacing())
 
-    def create_layer_manager(self):
-        
-        mainwindow = self.get_mainwindow()
-        
-        # Create a dockable widget
-        dock = QDockWidget("Segmentation Layer Manager ", mainwindow)
-        dock.setAllowedAreas(Qt.RightDockWidgetArea)
-        mainwindow.addDockWidget(Qt.RightDockWidgetArea, dock)
-
-        # Layer manager layout
-        layer_widget = QWidget()
-        layer_layout = QVBoxLayout()
-
-        # Layer list
-        self.list_widget = QListWidget()
-        self.list_widget.currentItemChanged.connect(self.list_widget_on_current_item_changed)
-        layer_layout.addWidget(self.list_widget)
-
-        # Buttons to manage layers
-        button_layout = QHBoxLayout()
-
-        add_layer_button = QPushButton("Add Layer")
-        add_layer_button.clicked.connect(self.add_layer_clicked)
-        button_layout.addWidget(add_layer_button)
-
-        remove_layer_button = QPushButton("Remove Layer")
-        remove_layer_button.clicked.connect(self.remove_layer_clicked)
-        button_layout.addWidget(remove_layer_button)
-
-        # Add the button layout at the top
-        layer_layout.addLayout(button_layout)
-        # Set layout for the layer manager
-        layer_widget.setLayout(layer_layout)
-        dock.setWidget(layer_widget)
 
     def list_widget_on_current_item_changed(self, current, previous):
         if current:
@@ -1408,7 +1444,6 @@ class SegmentationListManager():
 
         return segmentation
 
-
     def create_segmentation_actor(self, segmentation, color=(1, 0, 0), alpha=0.8):
         """Create a VTK actor for a segmentation layer."""
         # Create a lookup table for coloring the segmentation
@@ -1429,7 +1464,6 @@ class SegmentationListManager():
               
         return actor
 
-
 def is_dicom(file_path):
     import pydicom 
 
@@ -1445,26 +1479,30 @@ def is_dicom(file_path):
         print(f"Error reading file: {e}")
         return False
         
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         
         ### init ui ###    
-        self.init_ui()
+        self.setup_ui()
+
+        # exclusive QActions
+        self.exclusive_actions = []
 
         # Segmentation Manager
         self.segmentation_list_manager = SegmentationListManager(self.vtk_viewer, self)
-        
-        self.segmentation_list_manager.init_ui()
+        toolbar, dock = self.segmentation_list_manager.setup_ui()
+        self.addToolBar(Qt.TopToolBarArea, toolbar)
+        self.addDockWidget(Qt.RightDockWidgetArea, dock)
+        self.add_exclusive_actions(self.segmentation_list_manager.get_exclusive_actions())
 
         self.vitk_image = None
 
         # Load a sample DICOM file
         #dicom_file = "./data/jaw_cal.dcm"
         #self.load_dicom(dicom_file)
-
-    def init_ui(self):
+    
+    def setup_ui(self):
         self.setWindowTitle("Image Labeler 2D")
         self.setGeometry(100, 100, 1024, 786)
 
@@ -1487,30 +1525,30 @@ class MainWindow(QMainWindow):
         self.status_bar = self.statusBar()
         self.status_bar.showMessage("Ready")  # Initial message
 
-
-    def test(self):
+    def on_exclusiave_action_clicked(self):
         
-        image = self.vtk_image
-        
-        # Define the rectangular region to fill
-        start_x, end_x = 0, 1024  # Top-left corner of the rectangle
-        start_y, end_y = 50, 100      # Bottom-right corner of the rectangle
-        fill_value = 65535          # Value to fill the rectangle with
+        sender = self.sender()
 
-        mult = 65535 / 1024
-        # Fill the rectangular region
-        dims = image.GetDimensions()
-        scalars = image.GetPointData().GetScalars()
+        # Check if the sender is a QAction and retrieve its text
+        if isinstance(sender, QAction):
+            print(f"Exclusive action clicked: {sender.text()}")
+        else:
+            print("The sender is not a QAction.")
 
-        for y in range(start_y, end_y):
-            for x in range(start_x, end_x):
-                # Compute the flat index for the 2D image (assuming z=0)
-                index = y * dims[0] + x
-                scalars.SetTuple1(index, x * mult)
+        # Get the QAction that triggered this signal
+        sender = self.sender()
 
-        # Update the image data
-        image.Modified()
+        # uncheck all other actions
+        for action in self.exclusive_actions:
+            if action is not sender:
+                action.setChecked(False)
 
+
+
+    def add_exclusive_actions(self, actions):
+        for action in actions:
+            self.exclusive_actions.append(action)
+            action.triggered.connect(self.on_exclusiave_action_clicked)
 
     def load_image(self, file_path):
 
@@ -1525,27 +1563,16 @@ class MainWindow(QMainWindow):
         if file_extension == ".dcm" or is_dicom(file_path):
             # NOTE: this did not work for RTImage reading. So, using sitk to read images.
             #reader = vtk.vtkDICOMImageReader()
-
             from itkvtk import load_vtk_image_using_sitk
             self.vtk_image = load_vtk_image_using_sitk(file_path)
             image_type = "dicom"
         elif file_extension == ".mhd" or file_extension == ".mha":
             self.vtk_image = load_vtk_image_using_sitk(file_path)
-            #reader = vtk.vtkMetaImageReader()
             image_type = "meta"
         else:
             raise Exception("Only dicom or meta image formats are supported at the moment.")
 
-        # Get the scaled image
-        #self.vtk_image = shift_scale_filter.GetOutput()
-
-        #self.vtk_image = reader.GetOutput()
-
-
-        #self.test()
-
-
-        # Extract correct spacing for RTImage using pydicom
+         # Extract correct spacing for RTImage using pydicom
         if image_type == "dicom":
             
             import pydicom
@@ -1725,7 +1752,6 @@ class MainWindow(QMainWindow):
         zoom_action.triggered.connect(self.vtk_viewer.toggle_zooming_mode)
         toolbar.addAction(zoom_action)        
 
-
         # pan toggle button
         plan_action = QAction("Pan", self)
         plan_action.setCheckable(True)
@@ -1749,15 +1775,6 @@ class MainWindow(QMainWindow):
 
             self.print_status(f"Window: {window}, Level: {level}")
 
-    def set_default_window_level(self, image_array):
-        import numpy as np
-
-        # Set default window-level values
-        min = np.min(image_array)
-        max = np.max(image_array)
-
-
-    
     def open_image(self):
         init_folder = "."
         file_path, _ = QFileDialog.getOpenFileName(self, "Open DICOM File", init_folder, "Medical Image Files (*.dcm *.mhd *.mha);;DICOM Files (*.dcm);;MetaImage Files (*.mhd *.mha);;All Files (*)")
@@ -1849,7 +1866,7 @@ class MainWindow(QMainWindow):
         if os.path.exists(input_image_path):
             try:
                 self.vtk_image = load_vtk_image_using_sitk(input_image_path)
-                #self.set_default_window_level(self.image_array)  # Call set_default_window_level
+                
             except Exception as e:
                 self.print_status(f"Failed to load input image: {e}")
                 return
