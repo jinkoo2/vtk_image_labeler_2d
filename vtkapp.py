@@ -421,7 +421,7 @@ class VTKViewer(QWidget):
                 
         # Connect reader to window/level filter
         self.window_level_filter = vtk.vtkImageMapToWindowLevelColors()
-        self.window_level_filter.SetOutputFormatToRGB()
+        #self.window_level_filter.SetOutputFormatToRGB()
         self.window_level_filter.SetInputData(vtk_image)
         self.window_level_filter.SetWindow(window)
         self.window_level_filter.SetLevel(level)
@@ -505,8 +505,8 @@ class VTKViewer(QWidget):
         view_extent = camera.GetParallelScale()  # Approximate size of the visible area
 
         # Calculate ruler start and end points
-        start_point = [focal_point[0] - view_extent / 6, focal_point[1], focal_point[2]]
-        end_point = [focal_point[0] + view_extent / 6, focal_point[1], focal_point[2]]
+        start_point = [focal_point[0] - view_extent / 6, focal_point[1], focal_point[2]+0.1]
+        end_point = [focal_point[0] + view_extent / 6, focal_point[1], focal_point[2]+0.1]
 
         # Create a ruler using vtkLineWidget2
         line_widget = LineWidget(
@@ -926,10 +926,18 @@ class SegmentationListManager():
 
         self.paintbrush = None
 
-        # UI Components
-        self.layout = QVBoxLayout()
 
-
+    def clear(self):
+        
+        # remove actors
+        for layer_name, layer_data in self.segmentation_layers.items():
+            print(f"removing actor of layer {layer_name}")
+            actor = layer_data.actor
+            self.vtk_renderer.RemoveActor(actor)    
+        
+        self.vtk_image = None
+        self.segmentation_layers.clear()
+        self.list_widget.clear()
 
     def save_segmentation_layer(self, segmentation, file_path):
 
@@ -964,17 +972,7 @@ class SegmentationListManager():
                 "alpha": layer_data.alpha,
             }
 
-    def clear(self):
-        
-        # remove actors
-        for layer_name, layer_data in self.segmentation_layers.items():
-            print(f"removing actor of layer {layer_name}")
-            actor = layer_data.actor
-            self.vtk_renderer.RemoveActor(actor)    
-        
-        self.vtk_image = None
-        self.segmentation_layers.clear()
-        self.list_widget.clear()
+    
 
     def load_state(self, data_dict, data_dir, aux_data):
         import os
@@ -1316,7 +1314,6 @@ class SegmentationListManager():
         if self.list_widget.count() > 0:
             self.list_widget.setCurrentRow(self.list_widget.count() - 1)
 
-
     def add_layer_clicked(self):
 
         # Generate a random bright color for the new layer
@@ -1432,6 +1429,23 @@ class SegmentationListManager():
               
         return actor
 
+
+def is_dicom(file_path):
+    import pydicom 
+
+    """Check if the file is a valid DICOM file using pydicom."""
+    try:
+        # Attempt to read the file as a DICOM
+        ds = pydicom.dcmread(file_path, stop_before_pixels=True)
+        # If no exception occurs, it's a valid DICOM
+        return True
+    except pydicom.errors.InvalidDicomError:
+        return False
+    except Exception as e:
+        print(f"Error reading file: {e}")
+        return False
+        
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1473,49 +1487,96 @@ class MainWindow(QMainWindow):
         self.status_bar = self.statusBar()
         self.status_bar.showMessage("Ready")  # Initial message
 
-    def load_dicom(self, dicom_path):
 
-        # Use VTK DICOM Reader
-        reader = vtk.vtkDICOMImageReader()
-        reader.SetFileName(dicom_path)
-        reader.Update()
+    def test(self):
+        
+        image = self.vtk_image
+        
+        # Define the rectangular region to fill
+        start_x, end_x = 0, 1024  # Top-left corner of the rectangle
+        start_y, end_y = 50, 100      # Bottom-right corner of the rectangle
+        fill_value = 65535          # Value to fill the rectangle with
 
-        # Check if the output is valid
-        if not reader.GetOutput():
-            print("Error: Could not read DICOM file.")
-            return
+        mult = 65535 / 1024
+        # Fill the rectangular region
+        dims = image.GetDimensions()
+        scalars = image.GetPointData().GetScalars()
 
-        self.vtk_image = reader.GetOutput()
+        for y in range(start_y, end_y):
+            for x in range(start_x, end_x):
+                # Compute the flat index for the 2D image (assuming z=0)
+                index = y * dims[0] + x
+                scalars.SetTuple1(index, x * mult)
+
+        # Update the image data
+        image.Modified()
+
+
+    def load_image(self, file_path):
+
+        self.image_path = file_path 
+
+        _,file_extension = os.path.splitext(file_path)
+        file_extension = file_extension.lower()
+
+        print(f"File extension: {file_extension}")  # Output: .mha      
+
+        image_type = ""
+        if file_extension == ".dcm" or is_dicom(file_path):
+            # NOTE: this did not work for RTImage reading. So, using sitk to read images.
+            #reader = vtk.vtkDICOMImageReader()
+
+            from itkvtk import load_vtk_image_using_sitk
+            self.vtk_image = load_vtk_image_using_sitk(file_path)
+            image_type = "dicom"
+        elif file_extension == ".mhd" or file_extension == ".mha":
+            self.vtk_image = load_vtk_image_using_sitk(file_path)
+            #reader = vtk.vtkMetaImageReader()
+            image_type = "meta"
+        else:
+            raise Exception("Only dicom or meta image formats are supported at the moment.")
+
+        # Get the scaled image
+        #self.vtk_image = shift_scale_filter.GetOutput()
+
+        #self.vtk_image = reader.GetOutput()
+
+
+        #self.test()
+
 
         # Extract correct spacing for RTImage using pydicom
-        import pydicom
-        dicom_dataset = pydicom.dcmread(dicom_path)
-        if hasattr(dicom_dataset, "Modality") and dicom_dataset.Modality == "RTIMAGE":
-            # Extract necessary tags
-            if hasattr(dicom_dataset, "ImagePlanePixelSpacing"):
-                pixel_spacing = dicom_dataset.ImagePlanePixelSpacing  # [row spacing, column spacing]
-            else:
-                raise ValueError("RTImage is missing ImagePlanePixelSpacing")
+        if image_type == "dicom":
+            
+            import pydicom
+            dicom_dataset = pydicom.dcmread(file_path)
+            if hasattr(dicom_dataset, "Modality") and dicom_dataset.Modality == "RTIMAGE":
 
-            if hasattr(dicom_dataset, "RadiationMachineSAD"):
-                SAD = float(dicom_dataset.RadiationMachineSAD)
-            else:
-                raise ValueError("RTImage is missing RadiationMachineSAD")
+                # Extract necessary tags
+                if hasattr(dicom_dataset, "ImagePlanePixelSpacing"):
+                    pixel_spacing = dicom_dataset.ImagePlanePixelSpacing  # [row spacing, column spacing]
+                else:
+                    raise ValueError("RTImage is missing ImagePlanePixelSpacing")
 
-            if hasattr(dicom_dataset, "RTImageSID"):
-                SID = float(dicom_dataset.RTImageSID)
-            else:
-                raise ValueError("RTImage is missing RTImageSID")
+                if hasattr(dicom_dataset, "RadiationMachineSAD"):
+                    SAD = float(dicom_dataset.RadiationMachineSAD)
+                else:
+                    raise ValueError("RTImage is missing RadiationMachineSAD")
 
-            # Scale pixel spacing to SAD scale
-            scaling_factor = SAD / SID
-            scaled_spacing = [spacing * scaling_factor for spacing in pixel_spacing]
+                if hasattr(dicom_dataset, "RTImageSID"):
+                    SID = float(dicom_dataset.RTImageSID)
+                else:
+                    raise ValueError("RTImage is missing RTImageSID")
 
-            # Update spacing in vtkImageData
-            self.vtk_image.SetSpacing(scaled_spacing[1], scaled_spacing[0], 1.0)  # Column, Row, Depth
+                # Scale pixel spacing to SAD scale
+                scaling_factor = SAD / SID
+                scaled_spacing = [spacing * scaling_factor for spacing in pixel_spacing]
 
-            # Print the updated spacing
-            print(f"Updated Spacing: {self.vtk_image.GetSpacing()}")
+                # Update spacing in vtkImageData
+                self.vtk_image.SetSpacing(scaled_spacing[1], scaled_spacing[0], 1.0)  # Column, Row, Depth
+
+                # Print the updated spacing
+                print(f"Updated Spacing: {self.vtk_image.GetSpacing()}")
         
         # test
         #self.vtk_image.SetOrigin(50.0, 50.0, 0.0)
@@ -1540,7 +1601,7 @@ class MainWindow(QMainWindow):
         self.range_slider.high_value = scalar_range[1]
         self.range_slider.update()  
         
-        self.vtk_viewer.set_vtk_image(self.vtk_image, self.range_slider.get_width(), self.range_slider.get_center())
+        self.vtk_viewer.set_vtk_image(self.vtk_image, self.range_slider.get_width()/4, self.range_slider.get_center())
 
     def print_status(self, msg):
         self.status_bar.showMessage(msg)
@@ -1563,7 +1624,7 @@ class MainWindow(QMainWindow):
         
         # Add Open DICOM action
         open_image_action = QAction("Open Image", self)
-        open_image_action.triggered.connect(self.open_dicom)
+        open_image_action.triggered.connect(self.open_image)
         file_menu.addAction(open_image_action)
 
         # Add Save Workspace action
@@ -1614,7 +1675,7 @@ class MainWindow(QMainWindow):
         # Add actions to the toolbar
         # Add Open DICOM action
         open_action = QAction("Open Image", self)
-        open_action.triggered.connect(self.open_dicom)
+        open_action.triggered.connect(self.open_image)
         toolbar.addAction(open_action)
 
         # Add Save Workspace action
@@ -1696,27 +1757,11 @@ class MainWindow(QMainWindow):
         max = np.max(image_array)
 
 
-    def open_dicom(self):
-        import SimpleITK as sitk
-
-        init_folder = "W:/RadOnc/Planning/Physics QA/2024/1.Monthly QA/TrueBeamSH/2024_11/imaging"
-        file_path, _ = QFileDialog.getOpenFileName(self, "Open DICOM File", init_folder, "DICOM Files (*.dcm)")
-        if file_path:
-            # Load DICOM using SimpleITK
-            self.sitk_image = sitk.ReadImage(file_path)
-            image_array = sitk.GetArrayFromImage(self.sitk_image)[0]
-
-            self.set_default_window_level(image_array)
-
-            self.image_array = image_array
-           
-            self.update_window_level()
-
-            self.graphics_view.render_layers()
-
-            # notify other managers
-            self.segmentation_list_manager.on_image_loaded(self.sitk_image)
-            self.point_list_manager.on_image_loaded(self.sitk_image)
+    
+    def open_image(self):
+        init_folder = "."
+        file_path, _ = QFileDialog.getOpenFileName(self, "Open DICOM File", init_folder, "Medical Image Files (*.dcm *.mhd *.mha);;DICOM Files (*.dcm);;MetaImage Files (*.mhd *.mha);;All Files (*)")
+        self.load_image(file_path)
 
     def save_workspace(self):
         import json
