@@ -10,6 +10,8 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtWidgets import QWidget, QHBoxLayout, QCheckBox, QLabel, QListWidgetItem, QColorDialog
 from PyQt5.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QIcon
 
+from logger import logger
+
 def to_vtk_color(c):
     return [c[0]/255, c[1]/255, c[2]/255]
 
@@ -904,15 +906,18 @@ class LayerItemWidget(QWidget):
             
             self.layer_name = new_name
 
-class SegmentationListManager():
-    def __init__(self, vtk_viewer, mainwindow=None):
-        
+from PyQt5.QtCore import pyqtSignal, QObject
+
+class SegmentationListManager(QObject):
+    # Signal to emit log messages
+    log_message = pyqtSignal(str, str)  # Format: log_message(type, message)
+
+    def __init__(self, vtk_viewer):
+        super().__init__()  # Initialize QObject
+
         self.vtk_viewer = vtk_viewer
         self.vtk_renderer = vtk_viewer.get_renderer()
         self.active_layer_name = None
-
-        # mainwindow
-        self._mainwindow = mainwindow
 
         # segmentation data
         self.segmentation_layers = {}
@@ -926,6 +931,8 @@ class SegmentationListManager():
 
         self.paintbrush = None
 
+        logger.info("SegmentationListManager initialized")
+
     def setup_ui(self):   
         toolbar = self.create_toolbar()
         dock = self.create_dock_widget()
@@ -936,15 +943,13 @@ class SegmentationListManager():
         from PyQt5.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QIcon
         from labeled_slider import LabeledSlider
 
-        mainwindow = self.get_mainwindow()
-
         # Create a toolbar
         toolbar = QToolBar("PaintBrush Toolbar")
-        
+     
 
         # Add Paint Tool button
-        self.paint_action, self.paint_button = self.create_checkable_button("Paint", self.paint_active, mainwindow, toolbar, self.toggle_paint_tool)
-        self.erase_action, self.erase_button = self.create_checkable_button("Erase", self.erase_active, mainwindow, toolbar, self.toggle_erase_tool)
+        self.paint_action, self.paint_button = self.create_checkable_button("Paint", self.paint_active, toolbar, self.toggle_paint_tool)
+        self.erase_action, self.erase_button = self.create_checkable_button("Erase", self.erase_active, toolbar, self.toggle_erase_tool)
 
         # paintbrush size slider
         self.brush_size_slider = LabeledSlider("Brush Size:", initial_value=20)
@@ -956,8 +961,6 @@ class SegmentationListManager():
         return toolbar
     
     def create_dock_widget(self):
-        
-        mainwindow = self.get_mainwindow()
         
         # Create a dockable widget
         dock = QDockWidget("Segmentation Layer Manager ")
@@ -994,42 +997,7 @@ class SegmentationListManager():
 
     def get_exclusive_actions(self):
         return [self.paint_action, self.erase_action]
-        
-    def create_list_item_widget(self):
-        mainwindow = self.get_mainwindow()
-        
-        # Create a dockable widget
-        dock = QDockWidget("Segmentation Layer Manager", parent=mainwindow)
-        mainwindow.addDockWidget(Qt.RightDockWidgetArea, dock)
-
-        # Create a parent widget for the dock
-        dock_widget = QWidget()
-        dock_layout = QVBoxLayout()
-        dock_layout.setContentsMargins(0, 0, 0, 0)
-
-        # Create a toolbar for segmentation list actions
-        toolbar = QToolBar("Layer Actions Toolbar", self.get_mainwindow())
-        toolbar.setOrientation(Qt.Horizontal)  # Horizontal toolbar
-
-        self.add_layer_action = QAction("Add Layer")
-        self.add_layer_action.triggered.connect(self.add_layer_clicked)
-        toolbar.addAction(self.add_layer_action)
-
-        self.remove_layer_action = QAction("Remove Layer")
-        self.remove_layer_action.triggered.connect(self.remove_layer_clicked)
-        toolbar.addAction(self.remove_layer_action)
-
-
-        dock_layout.addWidget(toolbar)  # Add toolbar to the top of the dock
-
-        # Layer list
-        self.list_widget = QListWidget()
-        self.list_widget.currentItemChanged.connect(self.list_widget_on_current_item_changed)
-        dock_layout.addWidget(self.list_widget)
-
-        # Set the layout for the dock widget
-        dock_widget.setLayout(dock_layout)
-        dock.setWidget(dock_widget)
+      
 
     def clear(self):
         
@@ -1111,16 +1079,12 @@ class SegmentationListManager():
     def get_active_layer(self):
         return self.segmentation_layers.get(self.active_layer_name, None)
 
-    def get_mainwindow(self):
-        return self._mainwindow   
-
-
     def enable_paintbrush(self, enabled=True):
         
         if self.paintbrush is None:
             self.paintbrush = PaintBrush()
             self.paintbrush.set_radius_in_pixel(radius_in_pixel=(20, 20), pixel_spacing=self.vtk_viewer.vtk_image.GetSpacing())
-            self.get_mainwindow().vtk_viewer.get_renderer().AddActor(self.paintbrush.get_actor())
+            self.vtk_viewer.get_renderer().AddActor(self.paintbrush.get_actor())
 
         self.paintbrush.enabled = enabled
 
@@ -1233,11 +1197,8 @@ class SegmentationListManager():
         self.left_button_is_pressed = False
         self.last_mouse_position = None
 
-    def get_mainwindow(self):
-        return self._mainwindow
-    
-    def create_checkable_button(self, label, checked, mainwindow, toolbar, on_click_fn):
-        action = QAction(label, mainwindow)
+    def create_checkable_button(self, label, checked, toolbar, on_click_fn):
+        action = QAction(label)
         action.setCheckable(True)  # Make it togglable
         action.setChecked(checked)  # Sync with initial state
         action.triggered.connect(on_click_fn)
@@ -1316,9 +1277,16 @@ class SegmentationListManager():
         return self._mainwindow.status_bar
     
     def print_status(self, msg):
-        if self.get_status_bar() is not None:
-            self.get_status_bar().showMessage(msg)
+        #if self.get_status_bar() is not None:
+        #    self.get_status_bar().showMessage(msg)
     
+        """
+        Emit a log message with the specified type.
+        log_type can be INFO, WARNING, ERROR, etc.
+        """
+        log_type = "INFO"
+        self.log_message.emit(log_type, msg)
+
     def add_layer_widget_item(self, layer_name, layer_data):
 
         # Create a custom widget for the layer
@@ -1478,7 +1446,9 @@ def is_dicom(file_path):
     except Exception as e:
         print(f"Error reading file: {e}")
         return False
-        
+
+from PyQt5.QtWidgets import QMessageBox
+     
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1490,18 +1460,29 @@ class MainWindow(QMainWindow):
         self.exclusive_actions = []
 
         # Segmentation Manager
-        self.segmentation_list_manager = SegmentationListManager(self.vtk_viewer, self)
+        self.segmentation_list_manager = SegmentationListManager(self.vtk_viewer)
         toolbar, dock = self.segmentation_list_manager.setup_ui()
         self.addToolBar(Qt.TopToolBarArea, toolbar)
         self.addDockWidget(Qt.RightDockWidgetArea, dock)
         self.add_exclusive_actions(self.segmentation_list_manager.get_exclusive_actions())
+        # Connect log messages to a handler
+        self.segmentation_list_manager.log_message.connect(self.handle_log_message)
 
         self.vitk_image = None
 
         # Load a sample DICOM file
         #dicom_file = "./data/jaw_cal.dcm"
         #self.load_dicom(dicom_file)
-    
+
+        logger.info("MainWindow initialized")
+
+    def closeEvent(self, event):
+        """
+        Override the closeEvent to log application or window close.
+        """
+        logger.info("MainWindow is closing.")
+        super().closeEvent(event)  # Call the base class method to ensure proper behavior
+
     def setup_ui(self):
         self.setWindowTitle("Image Labeler 2D")
         self.setGeometry(100, 100, 1024, 786)
@@ -1524,6 +1505,35 @@ class MainWindow(QMainWindow):
         # Add status bar
         self.status_bar = self.statusBar()
         self.status_bar.showMessage("Ready")  # Initial message
+
+    def handle_log_message(self, log_type, message):
+        """
+        Handle log messages emitted by SegmentationListManager.
+        """
+        if log_type == "INFO":
+            self.status_bar.showMessage(message)
+            logger.info(message)  # Log the message
+        elif log_type == "WARNING":
+            self.status_bar.showMessage(f"WARNING: {message}")
+            logger.warning(message)  # Log the warning
+            self.show_popup("Warning", message, QMessageBox.Warning)
+        elif log_type == "ERROR":
+            self.status_bar.showMessage(f"ERROR: {message}")
+            logger.error(message)  # Log the error
+            self.show_popup("Error", message, QMessageBox.Critical)
+        else:
+            logger.debug(f"{log_type}: {message}")
+            self.status_bar.showMessage(f"{log_type}: {message}")
+
+    def show_popup(self, title, message, icon):
+        """
+        Display a QMessageBox with the specified title, message, and icon.
+        """
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle(title)
+        msg_box.setText(message)
+        msg_box.setIcon(icon)
+        msg_box.exec_()
 
     def on_exclusiave_action_clicked(self):
         
@@ -1552,84 +1562,90 @@ class MainWindow(QMainWindow):
 
     def load_image(self, file_path):
 
-        self.image_path = file_path 
+        try:
+            logger.info(f"Loading image from {file_path}")
+            self.image_path = file_path 
 
-        _,file_extension = os.path.splitext(file_path)
-        file_extension = file_extension.lower()
+            _,file_extension = os.path.splitext(file_path)
+            file_extension = file_extension.lower()
 
-        print(f"File extension: {file_extension}")  # Output: .mha      
+            print(f"File extension: {file_extension}")  # Output: .mha      
 
-        image_type = ""
-        if file_extension == ".dcm" or is_dicom(file_path):
-            # NOTE: this did not work for RTImage reading. So, using sitk to read images.
-            #reader = vtk.vtkDICOMImageReader()
-            from itkvtk import load_vtk_image_using_sitk
-            self.vtk_image = load_vtk_image_using_sitk(file_path)
-            image_type = "dicom"
-        elif file_extension == ".mhd" or file_extension == ".mha":
-            self.vtk_image = load_vtk_image_using_sitk(file_path)
-            image_type = "meta"
-        else:
-            raise Exception("Only dicom or meta image formats are supported at the moment.")
+            image_type = ""
+            if file_extension == ".dcm" or is_dicom(file_path):
+                # NOTE: this did not work for RTImage reading. So, using sitk to read images.
+                #reader = vtk.vtkDICOMImageReader()
+                from itkvtk import load_vtk_image_using_sitk
+                self.vtk_image = load_vtk_image_using_sitk(file_path)
+                image_type = "dicom"
+            elif file_extension == ".mhd" or file_extension == ".mha":
+                self.vtk_image = load_vtk_image_using_sitk(file_path)
+                image_type = "meta"
+            else:
+                raise Exception("Only dicom or meta image formats are supported at the moment.")
 
-         # Extract correct spacing for RTImage using pydicom
-        if image_type == "dicom":
+            # Extract correct spacing for RTImage using pydicom
+            if image_type == "dicom":
+                
+                import pydicom
+                dicom_dataset = pydicom.dcmread(file_path)
+                if hasattr(dicom_dataset, "Modality") and dicom_dataset.Modality == "RTIMAGE":
+
+                    # Extract necessary tags
+                    if hasattr(dicom_dataset, "ImagePlanePixelSpacing"):
+                        pixel_spacing = dicom_dataset.ImagePlanePixelSpacing  # [row spacing, column spacing]
+                    else:
+                        raise ValueError("RTImage is missing ImagePlanePixelSpacing")
+
+                    if hasattr(dicom_dataset, "RadiationMachineSAD"):
+                        SAD = float(dicom_dataset.RadiationMachineSAD)
+                    else:
+                        raise ValueError("RTImage is missing RadiationMachineSAD")
+
+                    if hasattr(dicom_dataset, "RTImageSID"):
+                        SID = float(dicom_dataset.RTImageSID)
+                    else:
+                        raise ValueError("RTImage is missing RTImageSID")
+
+                    # Scale pixel spacing to SAD scale
+                    scaling_factor = SAD / SID
+                    scaled_spacing = [spacing * scaling_factor for spacing in pixel_spacing]
+
+                    # Update spacing in vtkImageData
+                    self.vtk_image.SetSpacing(scaled_spacing[1], scaled_spacing[0], 1.0)  # Column, Row, Depth
+
+                    # Print the updated spacing
+                    print(f"Updated Spacing: {self.vtk_image.GetSpacing()}")
             
-            import pydicom
-            dicom_dataset = pydicom.dcmread(file_path)
-            if hasattr(dicom_dataset, "Modality") and dicom_dataset.Modality == "RTIMAGE":
+            # test
+            #self.vtk_image.SetOrigin(50.0, 50.0, 0.0)
+            #self.vtk_image.SetSpacing(0.5, 0.5, 1.0)  # Column, Row, Depth (0.8, 0.8, 1.0)
 
-                # Extract necessary tags
-                if hasattr(dicom_dataset, "ImagePlanePixelSpacing"):
-                    pixel_spacing = dicom_dataset.ImagePlanePixelSpacing  # [row spacing, column spacing]
-                else:
-                    raise ValueError("RTImage is missing ImagePlanePixelSpacing")
+            # align the center of the image to the center of the world coordiante system
+            # Get image properties
+            dims = self.vtk_image.GetDimensions()
+            spacing = self.vtk_image.GetSpacing()
+            original_origin = self.vtk_image.GetOrigin()
 
-                if hasattr(dicom_dataset, "RadiationMachineSAD"):
-                    SAD = float(dicom_dataset.RadiationMachineSAD)
-                else:
-                    raise ValueError("RTImage is missing RadiationMachineSAD")
+            print('dims: ', dims)
+            print('spacing: ', spacing)
+            print('original_origin: ', original_origin)
 
-                if hasattr(dicom_dataset, "RTImageSID"):
-                    SID = float(dicom_dataset.RTImageSID)
-                else:
-                    raise ValueError("RTImage is missing RTImageSID")
+            # Get the scalar range (pixel intensity range)
+            scalar_range = self.vtk_image.GetScalarRange()
 
-                # Scale pixel spacing to SAD scale
-                scaling_factor = SAD / SID
-                scaled_spacing = [spacing * scaling_factor for spacing in pixel_spacing]
-
-                # Update spacing in vtkImageData
-                self.vtk_image.SetSpacing(scaled_spacing[1], scaled_spacing[0], 1.0)  # Column, Row, Depth
-
-                # Print the updated spacing
-                print(f"Updated Spacing: {self.vtk_image.GetSpacing()}")
-        
-        # test
-        #self.vtk_image.SetOrigin(50.0, 50.0, 0.0)
-        #self.vtk_image.SetSpacing(0.5, 0.5, 1.0)  # Column, Row, Depth (0.8, 0.8, 1.0)
-
-        # align the center of the image to the center of the world coordiante system
-        # Get image properties
-        dims = self.vtk_image.GetDimensions()
-        spacing = self.vtk_image.GetSpacing()
-        original_origin = self.vtk_image.GetOrigin()
-
-        print('dims: ', dims)
-        print('spacing: ', spacing)
-        print('original_origin: ', original_origin)
-
-        # Get the scalar range (pixel intensity range)
-        scalar_range = self.vtk_image.GetScalarRange()
-
-        self.range_slider.range_min = scalar_range[0]
-        self.range_slider.range_max = scalar_range[1]
-        self.range_slider.low_value = scalar_range[0]
-        self.range_slider.high_value = scalar_range[1]
-        self.range_slider.update()  
-        
-        self.vtk_viewer.set_vtk_image(self.vtk_image, self.range_slider.get_width()/4, self.range_slider.get_center())
-
+            self.range_slider.range_min = scalar_range[0]
+            self.range_slider.range_max = scalar_range[1]
+            self.range_slider.low_value = scalar_range[0]
+            self.range_slider.high_value = scalar_range[1]
+            self.range_slider.update()  
+            
+            self.vtk_viewer.set_vtk_image(self.vtk_image, self.range_slider.get_width()/4, self.range_slider.get_center())
+            logger.info("Image loaded successfully")
+        except Exception as e:
+            logger.error(f"Failed to load image:{e}")
+            raise
+    
     def print_status(self, msg):
         self.status_bar.showMessage(msg)
 
@@ -1793,40 +1809,47 @@ class MainWindow(QMainWindow):
         # workspace json file
         workspace_json_path, _ = QFileDialog.getSaveFileName(self, "Save Workspace", "", "Json (*.json)")
         if not workspace_json_path:
+            logger.info("Save workspace operation canceled by user.")
             return 
         
-        # data folder for the workspace
-        data_dir = workspace_json_path+".data"
-        if not os.path.exists(data_dir):
-            os.makedirs(data_dir)
+        try:
+            # data folder for the workspace
+            data_dir = workspace_json_path+".data"
+            if not os.path.exists(data_dir):
+                os.makedirs(data_dir)
+                logger.debug(f"Created data directory: {data_dir}")
 
-        # Create a metadata dictionary
-        workspace_data = {
-            "window_settings": {
-                "level": self.range_slider.get_center(),
-                "width": self.range_slider.get_width(),
-                "range_min" : self.range_slider.range_min,
-                "range_max" : self.range_slider.range_max
+            # Create a metadata dictionary
+            workspace_data = {
+                "window_settings": {
+                    "level": self.range_slider.get_center(),
+                    "width": self.range_slider.get_width(),
+                    "range_min" : self.range_slider.range_min,
+                    "range_max" : self.range_slider.range_max
+                }
             }
-        }
 
-        # Save input image as '.mha'
-        from itkvtk import save_vtk_image_using_sitk
-        input_image_path = os.path.join(data_dir, "input_image.mhd")
-        save_vtk_image_using_sitk(self.vtk_image, input_image_path)
-        
-        #save segmentation layers
-        self.segmentation_list_manager.save_state(workspace_data, data_dir)
+            # Save input image as '.mha'
+            from itkvtk import save_vtk_image_using_sitk
+            input_image_path = os.path.join(data_dir, "input_image.mhd")
+            save_vtk_image_using_sitk(self.vtk_image, input_image_path)
+            logger.info(f"Saved input image to {input_image_path}")
+            
+            #save segmentation layers
+            self.segmentation_list_manager.save_state(workspace_data, data_dir)
+            logger.info("Saved segmentation layers.")
 
-        # Save points metadata
-        #self.point_list_manager.save_state(workspace_data, data_dir)
+            # Save points metadata
+            #self.point_list_manager.save_state(workspace_data, data_dir)
 
-        # Save metadata as 'workspace.json'
-        with open(workspace_json_path, "w") as f:
-            json.dump(workspace_data, f, indent=4)
-
-        self.print_status(f"Workspace saved to {workspace_json_path}.")
-
+            # Save metadata as 'workspace.json'
+            with open(workspace_json_path, "w") as f:
+                json.dump(workspace_data, f, indent=4)
+            logger.info(f"Workspace metadata saved to {workspace_json_path}.")
+            self.print_status(f"Workspace saved to {workspace_json_path}.")
+        except Exception as e:
+            logger.error(f"Failed to save workspace: {e}", exc_info=True)
+            self.print_status("Failed to save workspace. Check logs for details.")
 
     def load_workspace(self):
         import json
@@ -1836,6 +1859,7 @@ class MainWindow(QMainWindow):
         init_dir = "."
         workspace_json_path, _ = QFileDialog.getOpenFileName(self, "Select Workspace File", init_dir, "JSON Files (*.json)")
         if not workspace_json_path:
+           logger.info("Load workspace operation canceled by user.")
            return
 
         # Load metadata from 'workspace.json'
@@ -1845,59 +1869,70 @@ class MainWindow(QMainWindow):
 
         data_path = workspace_json_path+".data"
         if not os.path.exists(data_path):
-            self.print_status("Workspace data folder not found.")
+            msg = "Workspace data folder not found."
+            logger.error(msg)
+            self.print_status(msg)
             return
 
         try:
             with open(workspace_json_path, "r") as f:
                 workspace_data = json.load(f)
-        except json.JSONDecodeError as e:
-            self.print_status(f"Failed to parse workspace.json: {e}")
-            return
 
-        # Clear existing workspace
-        self.vtk_image = None
-        #self.point_list_manager.points.clear()
+            logger.info(f"Loaded workspace metadata from {workspace_json_path}.")
 
-        from itkvtk import load_vtk_image_using_sitk
+            # Clear existing workspace
+            self.vtk_image = None
+            #self.point_list_manager.points.clear()
 
-        # Load input image
-        input_image_path = os.path.join(data_path, "input_image.mhd")
-        if os.path.exists(input_image_path):
-            try:
+            from itkvtk import load_vtk_image_using_sitk
+
+            # Load input image
+            input_image_path = os.path.join(data_path, "input_image.mhd")
+            if os.path.exists(input_image_path):
                 self.vtk_image = load_vtk_image_using_sitk(input_image_path)
-                
-            except Exception as e:
-                self.print_status(f"Failed to load input image: {e}")
-                return
+                logger.info(f"Loaded input image from {input_image_path}.")
+            else:
+                raise FileNotFoundError(f"Input image file not found at {input_image_path}")
 
-        # Restore window settings
-        window_settings = workspace_data.get("window_settings", {})
-        window = window_settings.get("width", 1)
-        level = window_settings.get("level", 0)
+            # Restore window settings
+            window_settings = workspace_data.get("window_settings", {})
+            window = window_settings.get("width", 1)
+            level = window_settings.get("level", 0)
 
-        # Get the scalar range (pixel intensity range)
-        scalar_range = self.vtk_image.GetScalarRange()
+            # Get the scalar range (pixel intensity range)
+            scalar_range = self.vtk_image.GetScalarRange()
 
-        self.range_slider.range_min = scalar_range[0]
-        self.range_slider.range_max = scalar_range[1]
-        self.range_slider.low_value = level-window/2
-        self.range_slider.high_value = level+window/2
-        self.range_slider.update()  
+            self.range_slider.range_min = scalar_range[0]
+            self.range_slider.range_max = scalar_range[1]
+            self.range_slider.low_value = level-window/2
+            self.range_slider.high_value = level+window/2
+            self.range_slider.update()  
 
-        self.vtk_viewer.set_vtk_image(self.vtk_image, window, level)
+            self.vtk_viewer.set_vtk_image(self.vtk_image, window, level)
 
 
-        self.segmentation_list_manager.load_state(workspace_data, data_path, {'base_image': self.vtk_image})
-        #self.point_list_manager.load_state(workspace_data, data_path, {'base_image': self.sitk_image})
+            self.segmentation_list_manager.load_state(workspace_data, data_path, {'base_image': self.vtk_image})
+            #self.point_list_manager.load_state(workspace_data, data_path, {'base_image': self.sitk_image})
 
-        self.print_status(f"Workspace loaded from {data_path}.")
+            self.print_status(f"Workspace loaded from {data_path}.")
+            logger.info("Loaded workspace successfully.")
+
+        except Exception as e:
+            logger.error(f"Failed to load workspace: {e}", exc_info=True)
+            self.print_status("Failed to load workspace. Check logs for details.")
+
+
 
 if __name__ == "__main__":
     import sys
+    
+    logger.info("Application started")
+
     app = QApplication(sys.argv)
     
     app.setWindowIcon(QIcon(brush_icon_path))  # Set application icon
+
+    app.aboutToQuit.connect(lambda: logger.info("Application is quitting."))
 
     main_window = MainWindow()
     main_window.show()
