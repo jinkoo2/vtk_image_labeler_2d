@@ -965,7 +965,6 @@ class SegmentationListManager(QObject):
         # Create a dockable widget
         dock = QDockWidget("Segmentation Layer Manager ")
 
-
         # Layer manager layout
         layer_widget = QWidget()
         layer_layout = QVBoxLayout()
@@ -973,6 +972,13 @@ class SegmentationListManager(QObject):
         # Layer list
         self.list_widget = QListWidget()
         self.list_widget.currentItemChanged.connect(self.list_widget_on_current_item_changed)
+       
+        # Enable Reordering
+        self.list_widget.setDragEnabled(True)
+        self.list_widget.setAcceptDrops(True)
+        self.list_widget.setDropIndicatorShown(True)
+        self.list_widget.setDragDropMode(QListWidget.InternalMove)
+       
         layer_layout.addWidget(self.list_widget)
 
         # Buttons to manage layers
@@ -1432,6 +1438,239 @@ class SegmentationListManager(QObject):
               
         return actor
 
+
+import vtk
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QListWidget, QPushButton, QHBoxLayout, QDockWidget, QColorDialog, QLabel, QLineEdit, QCheckBox, QListWidgetItem
+from PyQt5.QtCore import pyqtSignal, QObject
+from PyQt5.QtGui import QColor
+
+
+class Point:
+    def __init__(self, coordinates, color=[255, 0, 0], visible=True):
+        self.coordinates = coordinates  # In image origin coordinate system
+        self.color = color
+        self.visible = visible
+        self.modified = False
+
+class EditablePoint:
+    def __init__(self, coordinates, color=[255, 0, 0], visible=True, renderer=None, interactor=None):
+        self.coordinates = coordinates
+        self.color = color
+        self.visible = visible
+        self.modified = False
+
+        # Create a handle representation
+        self.representation = vtk.vtkPointHandleRepresentation3D()
+        self.representation.SetWorldPosition(self.coordinates)
+        self.representation.SetHandleSize(20.0)
+        self.representation.GetProperty().SetLineWidth(3.0)
+        self.representation.GetProperty().SetColor(color[0] / 255, color[1] / 255, color[2] / 255)
+
+        # Create a handle widget
+        self.widget = vtk.vtkHandleWidget()
+        self.widget.SetRepresentation(self.representation)
+
+        # Add observer for position change
+        self.widget.AddObserver("InteractionEvent", self.on_position_changed)
+
+        # Add the widget to the interactor
+        if interactor:
+            self.widget.SetInteractor(interactor)
+            self.widget.EnabledOn()
+
+    def set_highlight(self, highlighted):
+        if highlighted:
+            #self.representation.SetHandleSize(20.0)
+            self.representation.GetProperty().SetLineWidth(6.0)
+        else: 
+            #self.representation.SetHandleSize(10.0)
+            self.representation.GetProperty().SetLineWidth(3.0)
+
+    def set_visibility(self, visible):
+        self.widget.EnabledOn() if visible else self.widget.EnabledOff()
+
+    def on_position_changed(self, obj, event):
+        self.coordinates = list(self.representation.GetWorldPosition())
+        self.modified = True
+        print(f"Point moved to: {self.coordinates}")
+
+class PointListManager(QObject):
+    log_message = pyqtSignal(str, str)  # For emitting log messages
+
+    def __init__(self, vtk_viewer):
+        super().__init__()
+        self.vtk_viewer = vtk_viewer
+        self.vtk_renderer = vtk_viewer.get_renderer()
+        self.points = []  # List of Point objects
+        
+        self.selected_point_index = None  # Index of currently selected point
+        self.editing_points_enabled = False  # Track if point editing is enabled
+        self.picker = vtk.vtkPointPicker()  # Picker for detecting points
+        self.dragged_point_index = None  # Index of the point being dragged
+
+
+    def setup_ui(self):
+        """Set up the UI with a dockable widget."""
+        dock = QDockWidget("Point Manager")
+        widget = QWidget()
+        layout = QVBoxLayout()
+
+        # List widget for points
+        self.list_widget = QListWidget()
+        self.list_widget.currentItemChanged.connect(self.on_current_item_changed)
+        layout.addWidget(self.list_widget)
+
+        # Buttons to manage points
+        button_layout = QHBoxLayout()
+        add_point_button = QPushButton("Add Point")
+        add_point_button.clicked.connect(self.add_point_clicked)
+        button_layout.addWidget(add_point_button)
+
+        remove_point_button = QPushButton("Remove Point")
+        remove_point_button.clicked.connect(self.remove_point_clicked)
+        button_layout.addWidget(remove_point_button)
+
+        edit_point_button = QPushButton("Edit Points")
+        edit_point_button.clicked.connect(self.edit_points_clicked)
+        button_layout.addWidget(edit_point_button)
+
+        layout.addLayout(button_layout)
+        widget.setLayout(layout)
+        dock.setWidget(widget)
+
+        # no toolbar
+        toolbar = None
+
+        return toolbar, dock
+
+    def get_exclusive_actions(self):
+        return []
+
+    def add_point(self, coordinates, color=[255, 0, 0], visible=True):
+        """Add a new editable point."""
+        editable_point = EditablePoint(
+            coordinates=coordinates,
+            color=color,
+            visible=visible,
+            renderer=self.vtk_renderer,
+            interactor=self.vtk_viewer.interactor
+        )
+        self.points.append(editable_point)
+
+        # Update the list widget
+        item = QListWidgetItem(f"Point {len(self.points)}")
+        item.data = editable_point
+        self.list_widget.addItem(item)
+        self.list_widget.setCurrentItem(item)
+
+        self.log_message.emit("INFO", f"Added point at {coordinates}")
+
+    def edit_points_clicked(self):
+        """Toggle editing mode for points."""
+        self.editing_points_enabled = not self.editing_points_enabled
+        for point in self.points:
+            point.set_visibility(self.editing_points_enabled)
+        self.log_message.emit("INFO", f"Point editing {'enabled' if self.editing_points_enabled else 'disabled'}.")
+
+    def remove_point(self, index):
+        """Remove a point by index."""
+        if index is not None and 0 <= index < len(self.points):
+            point = self.points.pop(index)
+
+            # Disable the point's widget and remove it
+            point.widget.EnabledOff()
+
+            # Update the list widget
+            self.list_widget.takeItem(index)
+            self.log_message.emit("INFO", f"Removed point at index {index}")
+            self.vtk_viewer.get_render_window().Render()    
+
+    def edit_point(self, index, new_coordinates=None, new_color=None, new_visibility=None):
+        """Edit a point's properties."""
+        if index is not None and 0 <= index < len(self.points):
+            point = self.points[index]
+
+            if new_coordinates:
+                point.coordinates = new_coordinates
+                point.actor.SetPosition(*new_coordinates)
+
+            if new_color:
+                point.color = new_color
+                point.actor.GetProperty().SetColor(new_color[0] / 255, new_color[1] / 255, new_color[2] / 255)
+
+            if new_visibility is not None:
+                point.visible = new_visibility
+                point.actor.SetVisibility(new_visibility)
+
+            point.modified = True
+            self.vtk_viewer.get_render_window().Render()
+            self.log_message.emit("INFO", f"Edited point {index}")
+
+    def on_current_item_changed(self, current, previous):
+        """Handle point selection in the list widget."""
+        if current:
+            self.selected_point_index = self.list_widget.row(current)
+            point = self.points[self.selected_point_index]
+
+            # turn off all    
+            for p in self.points:
+                p.set_highlight(False)
+                    
+            # turn on the selected point
+            point.set_highlight(True)
+
+            self.vtk_renderer.GetRenderWindow().Render()
+
+    def add_point_clicked(self):
+        """Handle the 'Add Point' button click."""
+        # Add a point at the center of the current view
+        camera = self.vtk_renderer.GetActiveCamera()
+        focal_point = camera.GetFocalPoint()
+        
+        # move closer to camera, so that it's visible.
+        focal_point = [focal_point[0], focal_point[1], focal_point[2]+1.0]
+
+        self.add_point(coordinates=focal_point)
+
+    def remove_point_clicked(self):
+        """Handle the 'Remove Point' button click."""
+        if self.selected_point_index is not None:
+            self.remove_point(self.selected_point_index)
+    
+
+    def save_state(self, data_dict):
+        """Save points to the state dictionary."""
+        points_data = []
+        for point in self.points:
+            points_data.append({
+                "coordinates": point.coordinates,
+                "color": point.color,
+                "visible": point.visible,
+                "modified": point.modified,
+            })
+        data_dict["points"] = points_data
+
+    def load_state(self, data_dict):
+        """Load points from the state dictionary."""
+        self.clear()
+        for point_data in data_dict.get("points", []):
+            self.add_point(
+                coordinates=point_data["coordinates"],
+                color=point_data["color"],
+                visible=point_data["visible"]
+            )
+
+    def clear(self):
+        """Clear all points."""
+        for point in self.points:
+            self.vtk_renderer.RemoveActor(point.actor)
+        self.points = []
+        self.list_widget.clear()
+        self.vtk_viewer.get_render_window().Render()
+
+
+
+
 def is_dicom(file_path):
     import pydicom 
 
@@ -1448,6 +1687,9 @@ def is_dicom(file_path):
         return False
 
 from PyQt5.QtWidgets import QMessageBox
+
+from PyQt5.QtCore import QSettings
+settings = QSettings("_settings.conf", QSettings.IniFormat)
      
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -1459,14 +1701,28 @@ class MainWindow(QMainWindow):
         # exclusive QActions
         self.exclusive_actions = []
 
-        # Segmentation Manager
+        ##########################
+        # Segmentation List Manager
         self.segmentation_list_manager = SegmentationListManager(self.vtk_viewer)
         toolbar, dock = self.segmentation_list_manager.setup_ui()
-        self.addToolBar(Qt.TopToolBarArea, toolbar)
-        self.addDockWidget(Qt.RightDockWidgetArea, dock)
-        self.add_exclusive_actions(self.segmentation_list_manager.get_exclusive_actions())
-        # Connect log messages to a handler
-        self.segmentation_list_manager.log_message.connect(self.handle_log_message)
+        if toolbar is not None:
+            self.addToolBar(Qt.TopToolBarArea, toolbar)
+        if dock is not None:
+            self.addDockWidget(Qt.RightDockWidgetArea, dock)
+        self.add_exclusive_actions(self.segmentation_list_manager.get_exclusive_actions()) 
+        self.segmentation_list_manager.log_message.connect(self.handle_log_message) # Connect log messages to a handler
+
+        ##########################
+        # Point List Manager
+        self.point_list_manager = PointListManager(self.vtk_viewer)
+        toolbar, dock = self.point_list_manager.setup_ui()
+        if toolbar is not None:
+            self.addToolBar(Qt.TopToolBarArea, toolbar)
+        if dock is not None:
+            self.addDockWidget(Qt.RightDockWidgetArea, dock)
+
+        self.add_exclusive_actions(self.point_list_manager.get_exclusive_actions())
+        self.point_list_manager.log_message.connect(self.handle_log_message) # Connect log messages to a handler
 
         self.vitk_image = None
 
@@ -1481,7 +1737,11 @@ class MainWindow(QMainWindow):
         Override the closeEvent to log application or window close.
         """
         logger.info("MainWindow is closing.")
+
+        
+
         super().closeEvent(event)  # Call the base class method to ensure proper behavior
+
 
     def setup_ui(self):
         self.setWindowTitle("Image Labeler 2D")
@@ -1553,99 +1813,11 @@ class MainWindow(QMainWindow):
             if action is not sender:
                 action.setChecked(False)
 
-
-
     def add_exclusive_actions(self, actions):
         for action in actions:
             self.exclusive_actions.append(action)
             action.triggered.connect(self.on_exclusiave_action_clicked)
 
-    def load_image(self, file_path):
-
-        try:
-            logger.info(f"Loading image from {file_path}")
-            self.image_path = file_path 
-
-            _,file_extension = os.path.splitext(file_path)
-            file_extension = file_extension.lower()
-
-            print(f"File extension: {file_extension}")  # Output: .mha      
-
-            image_type = ""
-            if file_extension == ".dcm" or is_dicom(file_path):
-                # NOTE: this did not work for RTImage reading. So, using sitk to read images.
-                #reader = vtk.vtkDICOMImageReader()
-                from itkvtk import load_vtk_image_using_sitk
-                self.vtk_image = load_vtk_image_using_sitk(file_path)
-                image_type = "dicom"
-            elif file_extension == ".mhd" or file_extension == ".mha":
-                self.vtk_image = load_vtk_image_using_sitk(file_path)
-                image_type = "meta"
-            else:
-                raise Exception("Only dicom or meta image formats are supported at the moment.")
-
-            # Extract correct spacing for RTImage using pydicom
-            if image_type == "dicom":
-                
-                import pydicom
-                dicom_dataset = pydicom.dcmread(file_path)
-                if hasattr(dicom_dataset, "Modality") and dicom_dataset.Modality == "RTIMAGE":
-
-                    # Extract necessary tags
-                    if hasattr(dicom_dataset, "ImagePlanePixelSpacing"):
-                        pixel_spacing = dicom_dataset.ImagePlanePixelSpacing  # [row spacing, column spacing]
-                    else:
-                        raise ValueError("RTImage is missing ImagePlanePixelSpacing")
-
-                    if hasattr(dicom_dataset, "RadiationMachineSAD"):
-                        SAD = float(dicom_dataset.RadiationMachineSAD)
-                    else:
-                        raise ValueError("RTImage is missing RadiationMachineSAD")
-
-                    if hasattr(dicom_dataset, "RTImageSID"):
-                        SID = float(dicom_dataset.RTImageSID)
-                    else:
-                        raise ValueError("RTImage is missing RTImageSID")
-
-                    # Scale pixel spacing to SAD scale
-                    scaling_factor = SAD / SID
-                    scaled_spacing = [spacing * scaling_factor for spacing in pixel_spacing]
-
-                    # Update spacing in vtkImageData
-                    self.vtk_image.SetSpacing(scaled_spacing[1], scaled_spacing[0], 1.0)  # Column, Row, Depth
-
-                    # Print the updated spacing
-                    print(f"Updated Spacing: {self.vtk_image.GetSpacing()}")
-            
-            # test
-            #self.vtk_image.SetOrigin(50.0, 50.0, 0.0)
-            #self.vtk_image.SetSpacing(0.5, 0.5, 1.0)  # Column, Row, Depth (0.8, 0.8, 1.0)
-
-            # align the center of the image to the center of the world coordiante system
-            # Get image properties
-            dims = self.vtk_image.GetDimensions()
-            spacing = self.vtk_image.GetSpacing()
-            original_origin = self.vtk_image.GetOrigin()
-
-            print('dims: ', dims)
-            print('spacing: ', spacing)
-            print('original_origin: ', original_origin)
-
-            # Get the scalar range (pixel intensity range)
-            scalar_range = self.vtk_image.GetScalarRange()
-
-            self.range_slider.range_min = scalar_range[0]
-            self.range_slider.range_max = scalar_range[1]
-            self.range_slider.low_value = scalar_range[0]
-            self.range_slider.high_value = scalar_range[1]
-            self.range_slider.update()  
-            
-            self.vtk_viewer.set_vtk_image(self.vtk_image, self.range_slider.get_width()/4, self.range_slider.get_center())
-            logger.info("Image loaded successfully")
-        except Exception as e:
-            logger.error(f"Failed to load image:{e}")
-            raise
-    
     def print_status(self, msg):
         self.status_bar.showMessage(msg)
 
@@ -1791,10 +1963,97 @@ class MainWindow(QMainWindow):
 
             self.print_status(f"Window: {window}, Level: {level}")
 
+    def get_list_dir(self):
+        if settings.contains('last_directory'):
+            return settings.value('last_directory')
+        else:
+            return '.'
+
     def open_image(self):
-        init_folder = "."
-        file_path, _ = QFileDialog.getOpenFileName(self, "Open DICOM File", init_folder, "Medical Image Files (*.dcm *.mhd *.mha);;DICOM Files (*.dcm);;MetaImage Files (*.mhd *.mha);;All Files (*)")
-        self.load_image(file_path)
+        file_path, _ = QFileDialog.getOpenFileName(self, "Open DICOM File", self.get_list_dir(), "Medical Image Files (*.dcm *.mhd *.mha);;DICOM Files (*.dcm);;MetaImage Files (*.mhd *.mha);;All Files (*)")
+        
+        # save to last_directory
+        settings.setValue("last_directory", os.path.dirname(file_path))
+
+        try:
+            logger.info(f"Loading image from {file_path}")
+            self.image_path = file_path 
+
+            _,file_extension = os.path.splitext(file_path)
+            file_extension = file_extension.lower()
+
+            print(f"File extension: {file_extension}")  # Output: .mha      
+
+            image_type = ""
+            if file_extension == ".dcm" or is_dicom(file_path):
+                # NOTE: this did not work for RTImage reading. So, using sitk to read images.
+                #reader = vtk.vtkDICOMImageReader()
+                from itkvtk import load_vtk_image_using_sitk
+                self.vtk_image = load_vtk_image_using_sitk(file_path)
+                image_type = "dicom"
+            elif file_extension == ".mhd" or file_extension == ".mha":
+                self.vtk_image = load_vtk_image_using_sitk(file_path)
+                image_type = "meta"
+            else:
+                raise Exception("Only dicom or meta image formats are supported at the moment.")
+
+            # Extract correct spacing for RTImage using pydicom
+            if image_type == "dicom":
+                
+                import pydicom
+                dicom_dataset = pydicom.dcmread(file_path)
+                if hasattr(dicom_dataset, "Modality") and dicom_dataset.Modality == "RTIMAGE":
+
+                    # Extract necessary tags
+                    if hasattr(dicom_dataset, "ImagePlanePixelSpacing"):
+                        pixel_spacing = dicom_dataset.ImagePlanePixelSpacing  # [row spacing, column spacing]
+                    else:
+                        raise ValueError("RTImage is missing ImagePlanePixelSpacing")
+
+                    if hasattr(dicom_dataset, "RadiationMachineSAD"):
+                        SAD = float(dicom_dataset.RadiationMachineSAD)
+                    else:
+                        raise ValueError("RTImage is missing RadiationMachineSAD")
+
+                    if hasattr(dicom_dataset, "RTImageSID"):
+                        SID = float(dicom_dataset.RTImageSID)
+                    else:
+                        raise ValueError("RTImage is missing RTImageSID")
+
+                    # Scale pixel spacing to SAD scale
+                    scaling_factor = SAD / SID
+                    scaled_spacing = [spacing * scaling_factor for spacing in pixel_spacing]
+
+                    # Update spacing in vtkImageData
+                    self.vtk_image.SetSpacing(scaled_spacing[1], scaled_spacing[0], 1.0)  # Column, Row, Depth
+
+                    # Print the updated spacing
+                    print(f"Updated Spacing: {self.vtk_image.GetSpacing()}")
+            
+            # align the center of the image to the center of the world coordiante system
+            # Get image properties
+            dims = self.vtk_image.GetDimensions()
+            spacing = self.vtk_image.GetSpacing()
+            original_origin = self.vtk_image.GetOrigin()
+
+            print('dims: ', dims)
+            print('spacing: ', spacing)
+            print('original_origin: ', original_origin)
+
+            # Get the scalar range (pixel intensity range)
+            scalar_range = self.vtk_image.GetScalarRange()
+
+            self.range_slider.range_min = scalar_range[0]
+            self.range_slider.range_max = scalar_range[1]
+            self.range_slider.low_value = scalar_range[0]
+            self.range_slider.high_value = scalar_range[1]
+            self.range_slider.update()  
+            
+            self.vtk_viewer.set_vtk_image(self.vtk_image, self.range_slider.get_width()/4, self.range_slider.get_center())
+            logger.info("Image loaded successfully")
+        except Exception as e:
+            logger.error(f"Failed to load image:{e}") 
+            self.show_popup("Load Image", f"Error: Load Image Failed, {str(e)}", QMessageBox.Critical)
 
     def save_workspace(self):
         import json
@@ -1812,6 +2071,9 @@ class MainWindow(QMainWindow):
             logger.info("Save workspace operation canceled by user.")
             return 
         
+        # save to last_directory
+        settings.setValue("last_directory", os.path.dirname(workspace_json_path))
+
         try:
             # data folder for the workspace
             data_dir = workspace_json_path+".data"
@@ -1847,25 +2109,24 @@ class MainWindow(QMainWindow):
                 json.dump(workspace_data, f, indent=4)
             logger.info(f"Workspace metadata saved to {workspace_json_path}.")
             self.print_status(f"Workspace saved to {workspace_json_path}.")
+            self.show_popup("Save Workspace", "Workspace saved successfully.", QMessageBox.Information)
         except Exception as e:
             logger.error(f"Failed to save workspace: {e}", exc_info=True)
             self.print_status("Failed to save workspace. Check logs for details.")
+            self.show_popup("Save Workspace", f"Error: {str(e)}", QMessageBox.Critical)      
 
     def load_workspace(self):
         import json
         import os
 
         """Load a workspace from a folder."""
-        init_dir = "."
-        workspace_json_path, _ = QFileDialog.getOpenFileName(self, "Select Workspace File", init_dir, "JSON Files (*.json)")
+        workspace_json_path, _ = QFileDialog.getOpenFileName(self, "Select Workspace File", self.get_list_dir(), "JSON Files (*.json)")
         if not workspace_json_path:
            logger.info("Load workspace operation canceled by user.")
            return
 
-        # Load metadata from 'workspace.json'
-        if not os.path.exists(workspace_json_path):
-            self.print_status("Workspace JSON file not found.")
-            return
+        # save to last dir
+        settings.setValue('last_directory', os.path.dirname(workspace_json_path))
 
         data_path = workspace_json_path+".data"
         if not os.path.exists(data_path):
