@@ -723,10 +723,6 @@ brush_icon_path = os.path.join(current_dir, "icons", "brush.png")
 eraser_icon_path = os.path.join(current_dir, "icons", "eraser.png")
 reset_zoom_icon_path = os.path.join(current_dir, "icons", "reset_zoom.png")
 
-from color_rotator import ColorRotator
-
-color_rotator = ColorRotator()
-
 import numpy as np
 
 class SegmentationLayer:
@@ -858,6 +854,7 @@ class LayerItemWidget(QWidget):
 
     def deactivate_editor(self):
         """Deactivate the editor, validate the name, and show the label."""
+
         new_name = self.edit_name.text()
         self.validate_name()
 
@@ -908,6 +905,8 @@ class LayerItemWidget(QWidget):
 
 from PyQt5.QtCore import pyqtSignal, QObject
 
+from color_rotator import ColorRotator
+
 class SegmentationListManager(QObject):
     # Signal to emit log messages
     log_message = pyqtSignal(str, str)  # Format: log_message(type, message)
@@ -930,6 +929,9 @@ class SegmentationListManager(QObject):
         self.erase_brush_color = [0, 0.5, 1.0]
 
         self.paintbrush = None
+
+        self.color_rotator = ColorRotator()
+
 
         logger.info("SegmentationListManager initialized")
 
@@ -1327,7 +1329,7 @@ class SegmentationListManager(QObject):
     def add_layer_clicked(self):
 
         # Generate a random bright color for the new layer
-        layer_color = color_rotator.next()
+        layer_color = self.color_rotator.next()
 
         # add layer data        
         layer_name = self.generate_unique_layer_name()
@@ -1444,14 +1446,6 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout, QListWidget, QPushButton, QHBo
 from PyQt5.QtCore import pyqtSignal, QObject
 from PyQt5.QtGui import QColor
 
-
-class Point:
-    def __init__(self, coordinates, color=[255, 0, 0], visible=True):
-        self.coordinates = coordinates  # In image origin coordinate system
-        self.color = color
-        self.visible = visible
-        self.modified = False
-
 class EditablePoint:
     def __init__(self, coordinates, color=[255, 0, 0], visible=True, renderer=None, interactor=None):
         self.coordinates = coordinates
@@ -1494,6 +1488,113 @@ class EditablePoint:
         self.modified = True
         print(f"Point moved to: {self.coordinates}")
 
+
+class PointListItemWidget(QWidget):
+    def __init__(self, name, point, manager):
+        super().__init__()
+        self.manager = manager
+        self.point = point
+        self.name = name
+
+        self.layout = QHBoxLayout()
+        self.layout.setContentsMargins(0, 0, 0, 0)
+
+        # Checkbox for visibility
+        self.checkbox = QCheckBox()
+        self.checkbox.setChecked(self.point.visible)
+        self.checkbox.stateChanged.connect(self.toggle_visibility)
+        self.layout.addWidget(self.checkbox)
+
+        # Color patch for the point
+        self.color_patch = QLabel()
+        self.color_patch.setFixedSize(16, 16)  # Small square
+        self.color_patch.setStyleSheet(f"background-color: {self.get_color_hex_string()}; border: 1px solid black;")
+        self.color_patch.setCursor(Qt.PointingHandCursor)
+        self.color_patch.mousePressEvent = self.change_color_clicked
+        self.layout.addWidget(self.color_patch)
+
+        # Label for the point name
+        self.label = QLabel(name)
+        self.label.setCursor(Qt.PointingHandCursor)
+        self.label.mouseDoubleClickEvent = self.activate_name_editor
+        self.layout.addWidget(self.label)
+
+        # Editable name field
+        self.edit_name = QLineEdit(name)
+        self.edit_name.setToolTip("Edit the point name (must be unique and file-system compatible).")
+        self.edit_name.hide()  # Initially hidden
+        self.edit_name.returnPressed.connect(self.deactivate_name_editor)
+        self.edit_name.editingFinished.connect(self.deactivate_name_editor)
+        self.edit_name.textChanged.connect(self.validate_name)
+
+        self.layout.addWidget(self.edit_name)
+        self.setLayout(self.layout)
+
+    def toggle_visibility(self, state):
+        self.point.visible = state == Qt.Checked
+        self.point.set_visibility(self.point.visible)
+        self.manager.on_point_changed(self.name)
+
+    def get_color_hex_string(self):
+        color = self.point.color
+        return f"rgb({color[0]}, {color[1]}, {color[2]})"
+
+    def change_color_clicked(self, event):
+        current_color = QColor(self.point.color[0], self.point.color[1], self.point.color[2])
+        color = QColorDialog.getColor(current_color, self, "Select Point Color")
+
+        if color.isValid():
+            c = [color.red(), color.green(), color.blue()]
+            self.point.color = c
+            self.color_patch.setStyleSheet(f"background-color: {self.get_color_hex_string()}; border: 1px solid black;")
+            self.point.representation.GetProperty().SetColor(c[0] / 255, c[1] / 255, c[2] / 255)
+            self.manager.on_point_changed(self.name)
+
+    def activate_name_editor(self, event):
+        self.label.hide()
+        self.edit_name.setText(self.label.text())
+        self.edit_name.show()
+        self.edit_name.setFocus()
+        self.edit_name.selectAll()
+
+    def deactivate_name_editor(self):
+        new_name = self.edit_name.text()
+        self.validate_name()
+
+        if self.edit_name.toolTip() == "":
+            self.label.setText(new_name)
+            self.name = new_name
+
+        self.label.show()
+        self.edit_name.hide()
+
+    def validate_name(self):
+        print('==== validate_name() ====')
+        new_name = self.edit_name.text()
+
+        print(f'new_name={new_name}')
+        invalid_chars = r'<>:"/\\|?*'
+        if any(char in new_name for char in invalid_chars) or new_name.strip() == "":
+            self.edit_name.setStyleSheet("background-color: rgb(255, 99, 71);")
+            self.edit_name.setToolTip("Point name contains invalid characters or is empty.")
+            print("Point name contains invalid characters or is empty.")
+            return
+
+        existing_names = [name for name in self.manager.point_names if name != self.name]
+        print(f'existing_names={existing_names}')
+        if new_name in existing_names:
+            self.edit_name.setStyleSheet("background-color: rgb(255, 99, 71);")
+            self.edit_name.setToolTip("Point name must be unique.")
+            return
+
+        self.edit_name.setStyleSheet("")
+        self.edit_name.setToolTip("")
+
+        self.manager.update_point_name(self.name, new_name)
+        self.name = new_name
+        self.label.setText(new_name)
+
+
 class PointListManager(QObject):
     log_message = pyqtSignal(str, str)  # For emitting log messages
 
@@ -1502,11 +1603,10 @@ class PointListManager(QObject):
         self.vtk_viewer = vtk_viewer
         self.vtk_renderer = vtk_viewer.get_renderer()
         self.points = []  # List of Point objects
-        
-        self.selected_point_index = None  # Index of currently selected point
-        self.editing_points_enabled = False  # Track if point editing is enabled
-        self.picker = vtk.vtkPointPicker()  # Picker for detecting points
-        self.dragged_point_index = None  # Index of the point being dragged
+        self.point_names = []
+
+        self.color_rotator = ColorRotator()
+
 
 
     def setup_ui(self):
@@ -1546,6 +1646,12 @@ class PointListManager(QObject):
     def get_exclusive_actions(self):
         return []
 
+    def generate_unique_layer_name(self, base_name="Point"):
+        index = 1
+        while f"{base_name} {index}" in self.point_names:
+            index += 1
+        return f"{base_name} {index}"
+    
     def add_point(self, coordinates, color=[255, 0, 0], visible=True):
         """Add a new editable point."""
         editable_point = EditablePoint(
@@ -1557,10 +1663,15 @@ class PointListManager(QObject):
         )
         self.points.append(editable_point)
 
-        # Update the list widget
-        item = QListWidgetItem(f"Point {len(self.points)}")
+        name = self.generate_unique_layer_name()
+        self.point_names.append(name)
+        
+        item_widget = PointListItemWidget(name, editable_point, self)
+        item = QListWidgetItem()
         item.data = editable_point
+        item.setSizeHint(item_widget.sizeHint())
         self.list_widget.addItem(item)
+        self.list_widget.setItemWidget(item, item_widget)
         self.list_widget.setCurrentItem(item)
 
         self.log_message.emit("INFO", f"Added point at {coordinates}")
@@ -1584,6 +1695,18 @@ class PointListManager(QObject):
             self.list_widget.takeItem(index)
             self.log_message.emit("INFO", f"Removed point at index {index}")
             self.vtk_viewer.get_render_window().Render()    
+
+    def update_point_name(self, old_name, new_name):
+        print('==== update_point_name() ====')
+        print(f'old_name={old_name}')
+        print(f'new_name={new_name}')
+        print(f'self.point_names={self.point_names}')
+
+        index = self.point_names.index(old_name)
+        self.point_names[index] = new_name
+
+    def on_point_changed(self, name):
+        self.vtk_renderer.GetRenderWindow().Render()
 
     def edit_point(self, index, new_coordinates=None, new_color=None, new_visibility=None):
         """Edit a point's properties."""
@@ -1629,8 +1752,8 @@ class PointListManager(QObject):
         
         # move closer to camera, so that it's visible.
         focal_point = [focal_point[0], focal_point[1], focal_point[2]+1.0]
-
-        self.add_point(coordinates=focal_point)
+        
+        self.add_point(coordinates=focal_point, color=self.color_rotator.next(), visible=True)
 
     def remove_point_clicked(self):
         """Handle the 'Remove Point' button click."""
