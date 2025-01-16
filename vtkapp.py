@@ -1036,7 +1036,7 @@ class SegmentationListManager(QObject):
 
     def save_state(self,data_dict, data_dir):
         # Save segmentation layers as '.mha'
-        data_dict["segmentation_layers"] = {}
+        data_dict["segmentations"] = {}
 
         for layer_name, layer_data in self.segmentation_layers.items():
             segmentation_file = f"{layer_name}.mhd"
@@ -1060,7 +1060,7 @@ class SegmentationListManager(QObject):
 
         # Load segmentation layers
         from itkvtk import load_vtk_image_using_sitk
-        for layer_name, layer_metadata in data_dict.get("segmentation_layers", {}).items():
+        for layer_name, layer_metadata in data_dict.get("segmentations", {}).items():
             seg_path = os.path.join(data_dir, layer_metadata["file"])
             if os.path.exists(seg_path):
                 try:
@@ -1580,7 +1580,7 @@ class PointListItemWidget(QWidget):
             print("Point name contains invalid characters or is empty.")
             return
 
-        existing_names = [name for name in self.manager.point_names if name != self.name]
+        existing_names = [name for name in self.manager.points.keys() if name != self.name]
         print(f'existing_names={existing_names}')
         if new_name in existing_names:
             self.edit_name.setStyleSheet("background-color: rgb(255, 99, 71);")
@@ -1590,9 +1590,21 @@ class PointListItemWidget(QWidget):
         self.edit_name.setStyleSheet("")
         self.edit_name.setToolTip("")
 
-        self.manager.update_point_name(self.name, new_name)
+        self.update_point_name(self.name, new_name)
         self.name = new_name
         self.label.setText(new_name)
+    
+    def update_point_name(self, new_name):
+        """Update the layer name in the viewer."""
+        if new_name != self.name:
+            
+            self.manager.points[new_name] = self.manager.points.pop(self.name)
+            
+            # if the current layer is the active layer, update the active layer name as well
+            if self.manager.active_point_name == self.name:
+                self.manager.active_point_name = new_name
+            
+            self.name = new_name
 
 
 class PointListManager(QObject):
@@ -1602,12 +1614,10 @@ class PointListManager(QObject):
         super().__init__()
         self.vtk_viewer = vtk_viewer
         self.vtk_renderer = vtk_viewer.get_renderer()
-        self.points = []  # List of Point objects
-        self.point_names = []
+        self.points = {}  # List of Point objects
+        self.active_point_name = None
 
         self.color_rotator = ColorRotator()
-
-
 
     def setup_ui(self):
         """Set up the UI with a dockable widget."""
@@ -1648,11 +1658,11 @@ class PointListManager(QObject):
 
     def generate_unique_layer_name(self, base_name="Point"):
         index = 1
-        while f"{base_name} {index}" in self.point_names:
+        while f"{base_name} {index}" in self.points:
             index += 1
         return f"{base_name} {index}"
     
-    def add_point(self, coordinates, color=[255, 0, 0], visible=True):
+    def add_point(self, coordinates, color=[255, 0, 0], visible=True, name=None):
         """Add a new editable point."""
         editable_point = EditablePoint(
             coordinates=coordinates,
@@ -1661,11 +1671,12 @@ class PointListManager(QObject):
             renderer=self.vtk_renderer,
             interactor=self.vtk_viewer.interactor
         )
-        self.points.append(editable_point)
 
-        name = self.generate_unique_layer_name()
-        self.point_names.append(name)
-        
+        if name is None:
+            name = self.generate_unique_layer_name()
+
+        self.points[name]= editable_point
+
         item_widget = PointListItemWidget(name, editable_point, self)
         item = QListWidgetItem()
         item.data = editable_point
@@ -1673,7 +1684,7 @@ class PointListManager(QObject):
         self.list_widget.addItem(item)
         self.list_widget.setItemWidget(item, item_widget)
         self.list_widget.setCurrentItem(item)
-
+        
         self.log_message.emit("INFO", f"Added point at {coordinates}")
 
     def edit_points_clicked(self):
@@ -1683,18 +1694,7 @@ class PointListManager(QObject):
             point.set_visibility(self.editing_points_enabled)
         self.log_message.emit("INFO", f"Point editing {'enabled' if self.editing_points_enabled else 'disabled'}.")
 
-    def remove_point(self, index):
-        """Remove a point by index."""
-        if index is not None and 0 <= index < len(self.points):
-            point = self.points.pop(index)
-
-            # Disable the point's widget and remove it
-            point.widget.EnabledOff()
-
-            # Update the list widget
-            self.list_widget.takeItem(index)
-            self.log_message.emit("INFO", f"Removed point at index {index}")
-            self.vtk_viewer.get_render_window().Render()    
+    
 
     def update_point_name(self, old_name, new_name):
         print('==== update_point_name() ====')
@@ -1729,20 +1729,32 @@ class PointListManager(QObject):
             self.vtk_viewer.get_render_window().Render()
             self.log_message.emit("INFO", f"Edited point {index}")
 
+
     def on_current_item_changed(self, current, previous):
         """Handle point selection in the list widget."""
         if current:
-            self.selected_point_index = self.list_widget.row(current)
-            point = self.points[self.selected_point_index]
+            # Retrieve the custom widget associated with the current QListWidgetItem
+            item_widget = self.list_widget.itemWidget(current)
+            
+            if item_widget and isinstance(item_widget, PointListItemWidget):
 
-            # turn off all    
-            for p in self.points:
-                p.set_highlight(False)
+                point = item_widget.point
+                name = item_widget.name
+
+                # turn off all others    
+                for key in self.points:
+                    p = self.points[key]
+                    if p is not point:
+                        p.set_highlight(False)
                     
-            # turn on the selected point
-            point.set_highlight(True)
+                # turn on the selected point
+                point.set_highlight(True)
 
-            self.vtk_renderer.GetRenderWindow().Render()
+                if self.active_point_name != name:
+                    self.active_point_name = name
+                    print(f"Point {name} selected")
+
+                self.vtk_renderer.GetRenderWindow().Render()
 
     def add_point_clicked(self):
         """Handle the 'Add Point' button click."""
@@ -1753,41 +1765,68 @@ class PointListManager(QObject):
         # move closer to camera, so that it's visible.
         focal_point = [focal_point[0], focal_point[1], focal_point[2]+1.0]
         
-        self.add_point(coordinates=focal_point, color=self.color_rotator.next(), visible=True)
+        name = self.generate_unique_layer_name()
+
+        self.add_point(coordinates=focal_point, color=self.color_rotator.next(), visible=True, name=name)
 
     def remove_point_clicked(self):
-        """Handle the 'Remove Point' button click."""
-        if self.selected_point_index is not None:
-            self.remove_point(self.selected_point_index)
-    
 
-    def save_state(self, data_dict):
+        selected_items = self.list_widget.selectedItems()
+        if not selected_items:
+            return
+
+        for item in selected_items:
+            widget = self.list_widget.itemWidget(item)
+            name = widget.name
+            point = widget.point
+
+            # Disable the point's widget and remove it
+            point.widget.EnabledOff()
+
+            # Remove from the data list
+            del self.points[name]
+
+            # Remove from the list widget
+            self.list_widget.takeItem(self.list_widget.row(item))
+
+        # Select the last item in the list widget (to activate it)
+        if self.list_widget.count() > 0:
+            self.list_widget.setCurrentRow(self.list_widget.count() - 1)
+
+        # render
+        self.vtk_renderer.GetRenderWindow().Render()    
+
+        self.print_status(f"Selected layers removed successfully. The acive layer is now {self.active_layer_name}")
+
+    def save_state(self, data_dict, data_dir):
         """Save points to the state dictionary."""
         points_data = []
-        for point in self.points:
+        for name in self.points:
+            point = self.points[name]
             points_data.append({
+                "name": name,
                 "coordinates": point.coordinates,
                 "color": point.color,
-                "visible": point.visible,
-                "modified": point.modified,
             })
         data_dict["points"] = points_data
 
-    def load_state(self, data_dict):
+    def load_state(self, data_dict, data_dir, aux_data):
         """Load points from the state dictionary."""
         self.clear()
         for point_data in data_dict.get("points", []):
             self.add_point(
                 coordinates=point_data["coordinates"],
                 color=point_data["color"],
-                visible=point_data["visible"]
+                visible= True,
+                name=point_data["name"]
             )
 
     def clear(self):
         """Clear all points."""
-        for point in self.points:
+        for name in self.points:
+            point = self.points[name]
             self.vtk_renderer.RemoveActor(point.actor)
-        self.points = []
+        self.points = {}
         self.list_widget.clear()
         self.vtk_viewer.get_render_window().Render()
 
@@ -1824,6 +1863,8 @@ class MainWindow(QMainWindow):
         # exclusive QActions
         self.exclusive_actions = []
 
+        self.managers = []
+
         ##########################
         # Segmentation List Manager
         self.segmentation_list_manager = SegmentationListManager(self.vtk_viewer)
@@ -1834,6 +1875,7 @@ class MainWindow(QMainWindow):
             self.addDockWidget(Qt.RightDockWidgetArea, dock)
         self.add_exclusive_actions(self.segmentation_list_manager.get_exclusive_actions()) 
         self.segmentation_list_manager.log_message.connect(self.handle_log_message) # Connect log messages to a handler
+        self.managers.append(self.segmentation_list_manager)
 
         ##########################
         # Point List Manager
@@ -1846,6 +1888,7 @@ class MainWindow(QMainWindow):
 
         self.add_exclusive_actions(self.point_list_manager.get_exclusive_actions())
         self.point_list_manager.log_message.connect(self.handle_log_message) # Connect log messages to a handler
+        self.managers.append(self.point_list_manager)
 
         self.vitk_image = None
 
@@ -2220,12 +2263,10 @@ class MainWindow(QMainWindow):
             save_vtk_image_using_sitk(self.vtk_image, input_image_path)
             logger.info(f"Saved input image to {input_image_path}")
             
-            #save segmentation layers
-            self.segmentation_list_manager.save_state(workspace_data, data_dir)
-            logger.info("Saved segmentation layers.")
-
-            # Save points metadata
-            #self.point_list_manager.save_state(workspace_data, data_dir)
+            logger.info('Saving manager states')
+            for manager in self.managers:
+                logger.info(f'{manager} - Saving state')
+                manager.save_state(workspace_data, data_dir)
 
             # Save metadata as 'workspace.json'
             with open(workspace_json_path, "w") as f:
@@ -2294,9 +2335,10 @@ class MainWindow(QMainWindow):
 
             self.vtk_viewer.set_vtk_image(self.vtk_image, window, level)
 
-
-            self.segmentation_list_manager.load_state(workspace_data, data_path, {'base_image': self.vtk_image})
-            #self.point_list_manager.load_state(workspace_data, data_path, {'base_image': self.sitk_image})
+            logger.info('loading manager states')
+            for manager in self.managers:
+                logger.info(f'{manager} - Loading state')
+                manager.load_state(workspace_data, data_path, {'base_image': self.vtk_image})
 
             self.print_status(f"Workspace loaded from {data_path}.")
             logger.info("Loaded workspace successfully.")
