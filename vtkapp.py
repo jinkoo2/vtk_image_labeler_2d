@@ -942,8 +942,15 @@ class SegmentationListManager(QObject):
 
         self.color_rotator = ColorRotator()
 
+        self._modified = False
 
         logger.info("SegmentationListManager initialized")
+
+    def reset_modified(self):
+        self._modified = False
+
+    def modified(self):
+        return self._modified 
 
     def setup_ui(self):   
         toolbar = self.create_toolbar()
@@ -1026,8 +1033,7 @@ class SegmentationListManager(QObject):
 
     def get_exclusive_actions(self):
         return [self.paint_action, self.erase_action]
-      
-
+    
     def clear(self):
         
         # remove actors
@@ -1037,8 +1043,10 @@ class SegmentationListManager(QObject):
             self.vtk_renderer.RemoveActor(actor)    
         
         self.vtk_image = None
+        self._modified = False
         self.segmentation_layers.clear()
         self.list_widget.clear()
+
 
     def save_segmentation_layer(self, segmentation, file_path):
 
@@ -1065,9 +1073,8 @@ class SegmentationListManager(QObject):
             self.save_segmentation_layer(layer_data.segmentation, segmentation_path)
 
             # Add layer metadata to the workspace data
-            data_dict["segmentation_layers"][layer_name] = {
+            data_dict["segmentations"][layer_name] = {
                 "file": segmentation_file,
-                "visible": layer_data.visible,
                 "color": list(layer_data.color),
                 "alpha": layer_data.alpha,
             }
@@ -1348,6 +1355,8 @@ class SegmentationListManager(QObject):
         if self.list_widget.count() > 0:
             self.list_widget.setCurrentRow(self.list_widget.count() - 1)
 
+        self._modified = True
+
     def add_layer_clicked(self):
 
         # Generate a random bright color for the new layer
@@ -1388,6 +1397,8 @@ class SegmentationListManager(QObject):
             # Select the last item in the list widget (to activate it)
             if layer_name == self.active_layer_name and self.list_widget.count() > 0:
                 self.list_widget.setCurrentRow(self.list_widget.count() - 1)
+
+            self._modifeid = True        
         else:
             logger.error(f'Remove layer failed. the name {layer_name} given is not in the segmentation layer list')
     
@@ -1425,6 +1436,8 @@ class SegmentationListManager(QObject):
 
         # render
         self.vtk_renderer.GetRenderWindow().Render()    
+
+        self._modifeid = True
 
         self.print_status(f"Selected layers removed successfully. The acive layer is now {self.active_layer_name}")
 
@@ -1678,7 +1691,15 @@ class PointListManager(QObject):
         self.points = {}  # List of Point objects
         self.active_point_name = None
 
+        self._modified = False
+
         self.color_rotator = ColorRotator()
+
+    def reset_modified(self):
+        self._modified = False
+
+    def modified(self):
+        return self._modified
 
     def setup_ui(self):
         """Set up the UI with a dockable widget."""
@@ -1742,6 +1763,8 @@ class PointListManager(QObject):
         self.list_widget.setItemWidget(item, item_widget)
         self.list_widget.setCurrentItem(item)
         
+        self._modified = True
+
         self.log_message.emit("INFO", f"Added point at {coordinates}")
 
     def edit_points_clicked(self):
@@ -1750,19 +1773,10 @@ class PointListManager(QObject):
         for point in self.points:
             point.set_visibility(self.editing_points_enabled)
         self.log_message.emit("INFO", f"Point editing {'enabled' if self.editing_points_enabled else 'disabled'}.")
-
-    
-
-    def update_point_name(self, old_name, new_name):
-        print('==== update_point_name() ====')
-        print(f'old_name={old_name}')
-        print(f'new_name={new_name}')
-        print(f'self.point_names={self.point_names}')
-
-        index = self.point_names.index(old_name)
-        self.point_names[index] = new_name
+  
 
     def on_point_changed(self, name):
+        self._modified = True
         self.vtk_renderer.GetRenderWindow().Render()
 
     def edit_point(self, index, new_coordinates=None, new_color=None, new_visibility=None):
@@ -1783,6 +1797,7 @@ class PointListManager(QObject):
                 point.actor.SetVisibility(new_visibility)
 
             point.modified = True
+            self._modified = True
             self.vtk_viewer.get_render_window().Render()
             self.log_message.emit("INFO", f"Edited point {index}")
 
@@ -1826,6 +1841,8 @@ class PointListManager(QObject):
 
         self.add_point(coordinates=focal_point, color=self.color_rotator.next(), visible=True, name=name)
 
+        self._modified = True
+
     def remove_point_by_name(self, name):
         
         if name in self.points:
@@ -1847,6 +1864,8 @@ class PointListManager(QObject):
                 # Select the last item in the list widget (to activate it)
                 if name == self.active_point_name and self.list_widget.count() > 0:
                     self.list_widget.setCurrentRow(self.list_widget.count() - 1)
+            
+                self._modified = True
             else:
                 logger.error(f'List item of name {name} not found!')
         else:
@@ -1892,13 +1911,16 @@ class PointListManager(QObject):
                 visible= True,
                 name=point_data["name"]
             )
-
+        
     def clear(self):
         """Clear all points."""
         for name in self.points:
             point = self.points[name]
-            self.vtk_renderer.RemoveActor(point.actor)
+            # Disable the point's widget and remove it
+            point.widget.EnabledOff()
+
         self.points = {}
+        self._modified = False
         self.list_widget.clear()
         self.vtk_viewer.get_render_window().Render()
 
@@ -1960,7 +1982,7 @@ class MainWindow(QMainWindow):
         self.point_list_manager.log_message.connect(self.handle_log_message) # Connect log messages to a handler
         self.managers.append(self.point_list_manager)
 
-        self.vitk_image = None
+        self.vtk_image = None
 
         # Load a sample DICOM file
         #dicom_file = "./data/jaw_cal.dcm"
@@ -2021,14 +2043,19 @@ class MainWindow(QMainWindow):
             logger.debug(f"{log_type}: {message}")
             self.status_bar.showMessage(f"{log_type}: {message}")
 
-    def show_popup(self, title, message, icon):
+    def show_popup(self, title, message, icon=None):
         """
         Display a QMessageBox with the specified title, message, and icon.
         """
         msg_box = QMessageBox(self)
         msg_box.setWindowTitle(title)
         msg_box.setText(message)
+
+        if icon is None:
+            icon = QMessageBox.Information
+            
         msg_box.setIcon(icon)
+        
         msg_box.exec_()
 
     def on_exclusiave_action_clicked(self):
@@ -2073,10 +2100,15 @@ class MainWindow(QMainWindow):
         
         from PyQt5.QtWidgets import QAction
         
-        # Add Open DICOM action
-        open_image_action = QAction("Open Image", self)
-        open_image_action.triggered.connect(self.open_image)
+        # Add Open Image action
+        open_image_action = QAction("Import Image", self)
+        open_image_action.triggered.connect(self.import_image_clicked)
         file_menu.addAction(open_image_action)
+
+        # Add Open Image action
+        close_image_action = QAction("Close Workspace", self)
+        close_image_action.triggered.connect(self.close_workspace)
+        file_menu.addAction(close_image_action)
 
         # Add Save Workspace action
         open_workspace_action = QAction("Open Workspace", self)
@@ -2125,9 +2157,13 @@ class MainWindow(QMainWindow):
 
         # Add actions to the toolbar
         # Add Open DICOM action
-        open_action = QAction("Open Image", self)
-        open_action.triggered.connect(self.open_image)
-        toolbar.addAction(open_action)
+        open_image_action = QAction("Import Image", self)
+        open_image_action.triggered.connect(self.import_image_clicked)
+        toolbar.addAction(open_image_action)
+
+        close_image_action = QAction("Close Image", self)
+        close_image_action.triggered.connect(self.close_workspace)
+        toolbar.addAction(close_image_action)
 
         # Add Save Workspace action
         open_workspace_action = QAction("Open Workspace", self)
@@ -2205,7 +2241,7 @@ class MainWindow(QMainWindow):
         else:
             return '.'
 
-    def open_image(self):
+    def import_image_clicked(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Open DICOM File", self.get_list_dir(), "Medical Image Files (*.dcm *.mhd *.mha);;DICOM Files (*.dcm);;MetaImage Files (*.mhd *.mha);;All Files (*)")
         
         if file_path == '':
@@ -2269,6 +2305,8 @@ class MainWindow(QMainWindow):
                     # Print the updated spacing
                     print(f"Updated Spacing: {self.vtk_image.GetSpacing()}")
             
+            self.image_type = image_type
+
             # align the center of the image to the center of the world coordiante system
             # Get image properties
             dims = self.vtk_image.GetDimensions()
@@ -2293,6 +2331,54 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"Failed to load image:{e}") 
             self.show_popup("Load Image", f"Error: Load Image Failed, {str(e)}", QMessageBox.Critical)
+
+
+    def modified(self):
+        for manager in self.managers:
+            if manager.modified():
+                return True
+
+    def show_yes_no_question_dialog(self, title, msg):
+        # Create a message box
+        msg_box = QMessageBox(self)
+        msg_box.setIcon(QMessageBox.Question)  # Set the icon to a question mark
+        msg_box.setWindowTitle(title)  # Set the title of the dialog
+        msg_box.setText(msg)  # Set the main message
+        msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)  # Add Yes and No buttons
+        
+        # Set the default button to Yes
+        msg_box.setDefaultButton(QMessageBox.Yes)
+        
+        # Show the dialog and get the user's response
+        response = msg_box.exec_()
+        
+        if response == QMessageBox.Yes:
+            return True
+        elif response == QMessageBox.No:
+            return False
+            
+    def close_workspace(self):
+
+        if self.vtk_image is None:
+            self.show_popup("Close Image", "No image has been loaded.")
+            return 
+
+        if self.modified():
+            yes = self.show_yes_no_question_dialog("Save Workspace", "There are modified objects. Do you want to save the workspace?")
+
+            if yes:
+                self.save_workspace()
+        
+        for manager in self.managers:
+            manager.clear()
+
+        self.vtk_viewer.clear()
+
+        self.image_path = None
+        self.vtk_image = None
+        self.image_type = None
+
+
 
     def save_workspace(self):
         import json
@@ -2344,13 +2430,18 @@ class MainWindow(QMainWindow):
             # Save metadata as 'workspace.json'
             with open(workspace_json_path, "w") as f:
                 json.dump(workspace_data, f, indent=4)
+            
+            # clear the modifed flags of managers
+            for manager in self.managers:
+                manager.reset_modified()
+            
             logger.info(f"Workspace metadata saved to {workspace_json_path}.")
             self.print_status(f"Workspace saved to {workspace_json_path}.")
             self.show_popup("Save Workspace", "Workspace saved successfully.", QMessageBox.Information)
         except Exception as e:
             logger.error(f"Failed to save workspace: {e}", exc_info=True)
             self.print_status("Failed to save workspace. Check logs for details.")
-            self.show_popup("Save Workspace", f"Error: {str(e)}", QMessageBox.Critical)      
+            self.show_popup("Save Workspace", f"Error saving workspace: {str(e)}", QMessageBox.Critical)      
 
     def load_workspace(self):
         import json
@@ -2412,6 +2503,10 @@ class MainWindow(QMainWindow):
             for manager in self.managers:
                 logger.info(f'{manager} - Loading state')
                 manager.load_state(workspace_data, data_path, {'base_image': self.vtk_image})
+
+            # clear the modifed flags of managers
+            for manager in self.managers:
+                manager.set_modified(False)
 
             self.print_status(f"Workspace loaded from {data_path}.")
             logger.info("Loaded workspace successfully.")
