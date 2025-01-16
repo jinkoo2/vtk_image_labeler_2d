@@ -736,7 +736,7 @@ class SegmentationLayer:
 
 from line_edit2 import LineEdit2
 
-class LayerItemWidget(QWidget):
+class SegmentationListItemWidget(QWidget):
     
     def get_viewer(self):
         return self.manager
@@ -778,10 +778,20 @@ class LayerItemWidget(QWidget):
         self.edit_name.returnPressed.connect(self.deactivate_editor)  # Commit name on Enter
         self.edit_name.editingFinished.connect(self.deactivate_editor)  # Commit name on losing focus
         self.edit_name.textChanged.connect(self.validate_name)
-        
         self.layout.addWidget(self.edit_name)
 
+        # Remove button (with 'x')
+        self.remove_button = QPushButton("X")
+        self.remove_button.setMinimumSize(25, 25)  # Adjust size for better appearance
+        self.remove_button.setToolTip("Remove this layer")
+        self.remove_button.clicked.connect(self.remove_layer_clicked)
+        self.layout.addWidget(self.remove_button, alignment=Qt.AlignCenter)
+
         self.setLayout(self.layout)
+
+    def remove_layer_clicked(self):
+        """Remove the layer when the 'x' button is clicked."""
+        self.manager.remove_segmentation_by_name(self.layer_name)
 
     def visible_checkbox_clicked(self, state):
         visibility = state == Qt.Checked
@@ -938,7 +948,7 @@ class SegmentationListManager(QObject):
     def setup_ui(self):   
         toolbar = self.create_toolbar()
         dock = self.create_dock_widget()
-        return toolbar, dock
+        return None, dock
 
     def create_toolbar(self):
         
@@ -965,11 +975,11 @@ class SegmentationListManager(QObject):
     def create_dock_widget(self):
         
         # Create a dockable widget
-        dock = QDockWidget("Segmentation Layer Manager ")
+        dock = QDockWidget("Segmentations")
 
         # Layer manager layout
-        layer_widget = QWidget()
-        layer_layout = QVBoxLayout()
+        main_widget = QWidget()
+        main_layout = QVBoxLayout()
 
         # Layer list
         self.list_widget = QListWidget()
@@ -981,7 +991,7 @@ class SegmentationListManager(QObject):
         self.list_widget.setDropIndicatorShown(True)
         self.list_widget.setDragDropMode(QListWidget.InternalMove)
        
-        layer_layout.addWidget(self.list_widget)
+        main_layout.addWidget(self.list_widget)
 
         # Buttons to manage layers
         button_layout = QHBoxLayout()
@@ -989,17 +999,28 @@ class SegmentationListManager(QObject):
         add_layer_button = QPushButton("Add Layer")
         add_layer_button.clicked.connect(self.add_layer_clicked)
         button_layout.addWidget(add_layer_button)
+        
+        # Add Paint Tool button
+        self.paint_action, self.paint_button = self.create_checkable_button("Paint", self.paint_active, None, self.toggle_paint_tool)
+        button_layout.addWidget(self.paint_button)
 
-        remove_layer_button = QPushButton("Remove Layer")
-        remove_layer_button.clicked.connect(self.remove_layer_clicked)
-        button_layout.addWidget(remove_layer_button)
+        self.erase_action, self.erase_button = self.create_checkable_button("Erase", self.erase_active, None, self.toggle_erase_tool)
+        button_layout.addWidget(self.erase_button)
 
-        # Add the button layout at the top
-        layer_layout.addLayout(button_layout)
+        # Add the button layout 
+        main_layout.addLayout(button_layout)
+        
+        from labeled_slider import LabeledSlider
+        brush_size_slider = LabeledSlider("Brush Size:", initial_value=20)
+        brush_size_slider.slider.setMinimum(3)
+        brush_size_slider.slider.setMaximum(100)
+        brush_size_slider.slider.valueChanged.connect(self.update_brush_size)
+        main_layout.addWidget(brush_size_slider)
+        
         # Set layout for the layer manager
-        layer_widget.setLayout(layer_layout)
-        dock.setWidget(layer_widget)
-
+        main_widget.setLayout(main_layout)
+        
+        dock.setWidget(main_widget)
 
         return dock
 
@@ -1218,7 +1239,8 @@ class SegmentationListManager(QObject):
         button.setDefaultAction(action)
 
         # add to the toolbar
-        toolbar.addWidget(button)
+        if toolbar is not None:
+            toolbar.addWidget(button)
 
         return action, button
  
@@ -1240,7 +1262,7 @@ class SegmentationListManager(QObject):
             # Retrieve the custom widget associated with the current QListWidgetItem
             item_widget = self.list_widget.itemWidget(current)
             
-            if item_widget and isinstance(item_widget, LayerItemWidget):
+            if item_widget and isinstance(item_widget, SegmentationListItemWidget):
                 # Access the layer_name from the custom widget
                 layer_name = item_widget.layer_name
                 if self.active_layer_name != layer_name:
@@ -1298,7 +1320,7 @@ class SegmentationListManager(QObject):
     def add_layer_widget_item(self, layer_name, layer_data):
 
         # Create a custom widget for the layer
-        layer_item_widget = LayerItemWidget(layer_name, layer_data, self)
+        layer_item_widget = SegmentationListItemWidget(layer_name, layer_data, self)
         layer_item = QListWidgetItem(self.list_widget)
         layer_item.setSizeHint(layer_item_widget.sizeHint())
         self.list_widget.addItem(layer_item)
@@ -1346,19 +1368,9 @@ class SegmentationListManager(QObject):
         self.print_status(f'A layer added: {layer_name}, and active layer is now {self.active_layer_name}')
         
 
-    def remove_layer_clicked(self):
-        if len(self.list_widget) == 1:
-                self.print_status("At least 1 layer is required.")
-                return 
-
-        selected_items = self.list_widget.selectedItems()
-        if not selected_items:
-            return
-
-        for item in selected_items:
-            widget = self.list_widget.itemWidget(item)
-            layer_name = widget.layer_name
-
+    def remove_segmentation_by_name(self, layer_name):
+        
+        if layer_name in self.segmentation_layers:
             # remove actor
             actor = self.segmentation_layers[layer_name].actor
             self.vtk_renderer.RemoveActor(actor)
@@ -1367,11 +1379,49 @@ class SegmentationListManager(QObject):
             del self.segmentation_layers[layer_name]
 
             # Remove from the list widget
-            self.list_widget.takeItem(self.list_widget.row(item))
+            item, _ = self.find_list_widget_item_by_text(layer_name)
+            if item is not None:
+                self.list_widget.takeItem(self.list_widget.row(item))
+            else:
+                logger.error(f'Internal error! List item of {layer_name} is not found!')
 
-        # Select the last item in the list widget (to activate it)
-        if self.list_widget.count() > 0:
-            self.list_widget.setCurrentRow(self.list_widget.count() - 1)
+            # Select the last item in the list widget (to activate it)
+            if layer_name == self.active_layer_name and self.list_widget.count() > 0:
+                self.list_widget.setCurrentRow(self.list_widget.count() - 1)
+        else:
+            logger.error(f'Remove layer failed. the name {layer_name} given is not in the segmentation layer list')
+    
+    def find_list_widget_item_by_text(self, text):
+        """
+        Find a QListWidgetItem in the list widget based on its text.
+
+        :param list_widget: The QListWidget instance.
+        :param text: The text of the item to find.
+        :return: The matching QListWidgetItem or None if not found.
+        """
+        list_widget = self.list_widget
+
+        for index in range(list_widget.count()):
+            item = list_widget.item(index)
+            item_widget = list_widget.itemWidget(item)
+
+            if item_widget.layer_name == text:
+                return item, item_widget
+        return None
+
+    def remove_layer_clicked(self):
+        #if len(self.list_widget) == 1:
+        #        self.print_status("At least 1 layer is required.")
+        #        return 
+
+        selected_items = self.list_widget.selectedItems()
+        if not selected_items:
+            return
+
+        for item in selected_items:
+            widget = self.list_widget.itemWidget(item)
+            layer_name = widget.layer_name
+            self.remove_layer(layer_name)
 
         # render
         self.vtk_renderer.GetRenderWindow().Render()    
@@ -1526,9 +1576,20 @@ class PointListItemWidget(QWidget):
         self.edit_name.returnPressed.connect(self.deactivate_name_editor)
         self.edit_name.editingFinished.connect(self.deactivate_name_editor)
         self.edit_name.textChanged.connect(self.validate_name)
-
         self.layout.addWidget(self.edit_name)
+
+        # Remove button (with 'x')
+        self.remove_button = QPushButton("X")
+        self.remove_button.setMinimumSize(25, 25)  # Adjust size for better appearance
+        self.remove_button.setToolTip("Remove this point")
+        self.remove_button.clicked.connect(self.remove_point_clicked)
+        self.layout.addWidget(self.remove_button, alignment=Qt.AlignCenter)
+
         self.setLayout(self.layout)
+
+    def remove_point_clicked(self):
+        """Remove the layer when the 'x' button is clicked."""
+        self.manager.remove_point_by_name(self.name)
 
     def toggle_visibility(self, state):
         self.point.visible = state == Qt.Checked
@@ -1621,7 +1682,7 @@ class PointListManager(QObject):
 
     def setup_ui(self):
         """Set up the UI with a dockable widget."""
-        dock = QDockWidget("Point Manager")
+        dock = QDockWidget("Points")
         widget = QWidget()
         layout = QVBoxLayout()
 
@@ -1635,10 +1696,6 @@ class PointListManager(QObject):
         add_point_button = QPushButton("Add Point")
         add_point_button.clicked.connect(self.add_point_clicked)
         button_layout.addWidget(add_point_button)
-
-        remove_point_button = QPushButton("Remove Point")
-        remove_point_button.clicked.connect(self.remove_point_clicked)
-        button_layout.addWidget(remove_point_button)
 
         edit_point_button = QPushButton("Edit Points")
         edit_point_button.clicked.connect(self.edit_points_clicked)
@@ -1656,7 +1713,7 @@ class PointListManager(QObject):
     def get_exclusive_actions(self):
         return []
 
-    def generate_unique_layer_name(self, base_name="Point"):
+    def generate_unique_name(self, base_name="Point"):
         index = 1
         while f"{base_name} {index}" in self.points:
             index += 1
@@ -1673,7 +1730,7 @@ class PointListManager(QObject):
         )
 
         if name is None:
-            name = self.generate_unique_layer_name()
+            name = self.generate_unique_name()
 
         self.points[name]= editable_point
 
@@ -1765,38 +1822,53 @@ class PointListManager(QObject):
         # move closer to camera, so that it's visible.
         focal_point = [focal_point[0], focal_point[1], focal_point[2]+1.0]
         
-        name = self.generate_unique_layer_name()
+        name = self.generate_unique_name()
 
         self.add_point(coordinates=focal_point, color=self.color_rotator.next(), visible=True, name=name)
 
-    def remove_point_clicked(self):
+    def remove_point_by_name(self, name):
+        
+        if name in self.points:
+            
+            item, item_widget = self.find_list_widget_item_by_text(name)
 
-        selected_items = self.list_widget.selectedItems()
-        if not selected_items:
-            return
+            if item is not None:
+                point = item_widget.point
 
-        for item in selected_items:
-            widget = self.list_widget.itemWidget(item)
-            name = widget.name
-            point = widget.point
+                # Disable the point's widget and remove it
+                point.widget.EnabledOff()
 
-            # Disable the point's widget and remove it
-            point.widget.EnabledOff()
+                # Remove from the data list
+                del self.points[name]
 
-            # Remove from the data list
-            del self.points[name]
+                # Remove from the list widget
+                self.list_widget.takeItem(self.list_widget.row(item))
 
-            # Remove from the list widget
-            self.list_widget.takeItem(self.list_widget.row(item))
+                # Select the last item in the list widget (to activate it)
+                if name == self.active_point_name and self.list_widget.count() > 0:
+                    self.list_widget.setCurrentRow(self.list_widget.count() - 1)
+            else:
+                logger.error(f'List item of name {name} not found!')
+        else:
+            logger.error(f'Remove point failed. the point with name {name} in the point list')
+    
+    def find_list_widget_item_by_text(self, text):
+        """
+        Find a QListWidgetItem in the list widget based on its text.
 
-        # Select the last item in the list widget (to activate it)
-        if self.list_widget.count() > 0:
-            self.list_widget.setCurrentRow(self.list_widget.count() - 1)
+        :param list_widget: The QListWidget instance.
+        :param text: The text of the item to find.
+        :return: The matching QListWidgetItem or None if not found.
+        """
+        list_widget = self.list_widget
 
-        # render
-        self.vtk_renderer.GetRenderWindow().Render()    
+        for index in range(list_widget.count()):
+            item = list_widget.item(index)
+            item_widget = list_widget.itemWidget(item)
 
-        self.print_status(f"Selected layers removed successfully. The acive layer is now {self.active_layer_name}")
+            if item_widget.name == text:
+                return item, item_widget
+        return None
 
     def save_state(self, data_dict, data_dir):
         """Save points to the state dictionary."""
@@ -1829,8 +1901,6 @@ class PointListManager(QObject):
         self.points = {}
         self.list_widget.clear()
         self.vtk_viewer.get_render_window().Render()
-
-
 
 
 def is_dicom(file_path):
@@ -2137,6 +2207,9 @@ class MainWindow(QMainWindow):
 
     def open_image(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Open DICOM File", self.get_list_dir(), "Medical Image Files (*.dcm *.mhd *.mha);;DICOM Files (*.dcm);;MetaImage Files (*.mhd *.mha);;All Files (*)")
+        
+        if file_path == '':
+            return 
         
         # save to last_directory
         settings.setValue("last_directory", os.path.dirname(file_path))
