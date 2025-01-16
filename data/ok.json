@@ -1,9 +1,0 @@
-{
-    "window_settings": {
-        "level": 32767.0,
-        "width": 65534.0,
-        "range_min": 0.0,
-        "range_max": 65534.0
-    },
-    "segmentation_layers": {}
-}
