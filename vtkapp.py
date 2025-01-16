@@ -913,6 +913,8 @@ class SegmentationListItemWidget(QWidget):
             
             self.layer_name = new_name
 
+            self.manager.on_layer_changed(new_name)
+
 from PyQt5.QtCore import pyqtSignal, QObject
 
 from color_rotator import ColorRotator
@@ -948,9 +950,19 @@ class SegmentationListManager(QObject):
 
     def reset_modified(self):
         self._modified = False
+        for _, data in self.segmentation_layers.items():
+            data.modified = False
 
     def modified(self):
-        return self._modified 
+        if self._modified:
+            return True
+        
+        for _, data in self.segmentation_layers.items():
+            if data.modified:
+                return True
+        
+        return False
+
 
     def setup_ui(self):   
         toolbar = self.create_toolbar()
@@ -1049,17 +1061,6 @@ class SegmentationListManager(QObject):
 
 
     def save_segmentation_layer(self, segmentation, file_path):
-
-        # Expand 2D segmentation into 3D (single slice)
-        #segmentation_3d = np.expand_dims(segmentation, axis=0)
-        #segmentation_image = sitk.GetImageFromArray(segmentation_3d)
-
-        # Copy spatial metadata from the base
-        #segmentation_image.CopyInformation(self.sitk_image)
-
-        # Save the segmentation as .mha
-        #sitk.WriteImage(segmentation_image, file_path,useCompression=True)
-
         from itkvtk import save_vtk_image_using_sitk
         save_vtk_image_using_sitk(segmentation, file_path)
 
@@ -1110,6 +1111,7 @@ class SegmentationListManager(QObject):
         self.vtk_renderer.GetRenderWindow().Render()
 
     def on_layer_changed(self, layer_name):
+        self._modified = True
         self.render()
 
     def get_active_layer(self):
@@ -1184,7 +1186,9 @@ class SegmentationListManager(QObject):
 
         self.paintbrush.paint(segmentation, x, y, value)
         
-        segmentation.Modified()
+        segmentation.Modified() # flag vtkImageData as Modified to update the pipeline.
+        
+        self._modified = True
         self.render()
 
     def on_left_button_press(self, obj, event):
@@ -1398,7 +1402,7 @@ class SegmentationListManager(QObject):
             if layer_name == self.active_layer_name and self.list_widget.count() > 0:
                 self.list_widget.setCurrentRow(self.list_widget.count() - 1)
 
-            self._modifeid = True        
+            self._modified = True        
         else:
             logger.error(f'Remove layer failed. the name {layer_name} given is not in the segmentation layer list')
     
@@ -1437,7 +1441,7 @@ class SegmentationListManager(QObject):
         # render
         self.vtk_renderer.GetRenderWindow().Render()    
 
-        self._modifeid = True
+        self._modified = True
 
         self.print_status(f"Selected layers removed successfully. The acive layer is now {self.active_layer_name}")
 
@@ -1664,7 +1668,7 @@ class PointListItemWidget(QWidget):
         self.edit_name.setStyleSheet("")
         self.edit_name.setToolTip("")
 
-        self.update_point_name(self.name, new_name)
+        self.update_point_name(new_name)
         self.name = new_name
         self.label.setText(new_name)
     
@@ -1679,6 +1683,8 @@ class PointListItemWidget(QWidget):
                 self.manager.active_point_name = new_name
             
             self.name = new_name
+
+            self.manager.on_point_changed(new_name)
 
 
 class PointListManager(QObject):
@@ -1697,9 +1703,19 @@ class PointListManager(QObject):
 
     def reset_modified(self):
         self._modified = False
+        for _, data in self.points.items():
+            data.modified = False
+
 
     def modified(self):
-        return self._modified
+        if self._modified:
+            return True
+
+        for name, point in self.points.items():
+            if point.modified:
+                return True
+            
+        return False
 
     def setup_ui(self):
         """Set up the UI with a dockable widget."""
@@ -1773,7 +1789,6 @@ class PointListManager(QObject):
         for point in self.points:
             point.set_visibility(self.editing_points_enabled)
         self.log_message.emit("INFO", f"Point editing {'enabled' if self.editing_points_enabled else 'disabled'}.")
-  
 
     def on_point_changed(self, name):
         self._modified = True
@@ -2105,20 +2120,20 @@ class MainWindow(QMainWindow):
         open_image_action.triggered.connect(self.import_image_clicked)
         file_menu.addAction(open_image_action)
 
-        # Add Open Image action
-        close_image_action = QAction("Close Workspace", self)
-        close_image_action.triggered.connect(self.close_workspace)
-        file_menu.addAction(close_image_action)
-
         # Add Save Workspace action
         open_workspace_action = QAction("Open Workspace", self)
-        open_workspace_action.triggered.connect(self.load_workspace)
+        open_workspace_action.triggered.connect(self.open_workspace)
         file_menu.addAction(open_workspace_action)
 
         # Add Save Workspace action
         save_workspace_action = QAction("Save Workspace", self)
         save_workspace_action.triggered.connect(self.save_workspace)
         file_menu.addAction(save_workspace_action)
+
+        # Add Open Image action
+        close_image_action = QAction("Close Workspace", self)
+        close_image_action.triggered.connect(self.close_workspace)
+        file_menu.addAction(close_image_action)
 
         # Print Object Properties Button
         print_objects_action = QAction("Print Object Properties", self)
@@ -2161,18 +2176,18 @@ class MainWindow(QMainWindow):
         open_image_action.triggered.connect(self.import_image_clicked)
         toolbar.addAction(open_image_action)
 
-        close_image_action = QAction("Close Image", self)
-        close_image_action.triggered.connect(self.close_workspace)
-        toolbar.addAction(close_image_action)
-
         # Add Save Workspace action
         open_workspace_action = QAction("Open Workspace", self)
-        open_workspace_action.triggered.connect(self.load_workspace)
+        open_workspace_action.triggered.connect(self.open_workspace)
         toolbar.addAction(open_workspace_action)
 
         save_workspace_action = QAction("Save Workspace", self)
         save_workspace_action.triggered.connect(self.save_workspace)
         toolbar.addAction(save_workspace_action)
+
+        close_image_action = QAction("Close Workspace", self)
+        close_image_action.triggered.connect(self.close_workspace)
+        toolbar.addAction(close_image_action)
 
     def create_view_toolbar(self):
         from labeled_slider import LabeledSlider
@@ -2337,7 +2352,8 @@ class MainWindow(QMainWindow):
         for manager in self.managers:
             if manager.modified():
                 return True
-
+        return False
+    
     def show_yes_no_question_dialog(self, title, msg):
         # Create a message box
         msg_box = QMessageBox(self)
@@ -2443,7 +2459,7 @@ class MainWindow(QMainWindow):
             self.print_status("Failed to save workspace. Check logs for details.")
             self.show_popup("Save Workspace", f"Error saving workspace: {str(e)}", QMessageBox.Critical)      
 
-    def load_workspace(self):
+    def open_workspace(self):
         import json
         import os
 
@@ -2506,7 +2522,7 @@ class MainWindow(QMainWindow):
 
             # clear the modifed flags of managers
             for manager in self.managers:
-                manager.set_modified(False)
+                manager.reset_modified()
 
             self.print_status(f"Workspace loaded from {data_path}.")
             logger.info("Loaded workspace successfully.")
