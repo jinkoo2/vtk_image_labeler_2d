@@ -1,5 +1,11 @@
 import vtk
 
+def to_vtk_color(c):
+    return [c[0]/255, c[1]/255, c[2]/255]
+
+def from_vtk_color(c):
+    return [int(c[0]*255), int(c[1]*255), int(c[2]*255)]
+
 def remove_widget(widget, renderer):
     if widget:
         # Disable the widget
