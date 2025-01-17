@@ -699,13 +699,13 @@ class VTKViewer(QWidget):
         self.image_actor.SetVisibility(self.base_image_visible)
         self.render_window.Render()
 
-    def toggle_panning_mode(self):
+    def toggle_panning_mode(self, checked):
         """Enable or disable panning mode."""
-        self.panning.enable(not self.panning.enabled)
+        self.panning.enable(checked)
 
-    def toggle_zooming_mode(self):
+    def toggle_zooming_mode(self, checked):
         """Enable or disable panning mode."""
-        self.zooming.enable(not self.zooming.enabled)
+        self.zooming.enable(checked)
   
     def toggle_paintbrush(self, enabled):
         """Enable or disable the paintbrush tool."""
@@ -1237,11 +1237,12 @@ class SegmentationListManager(QObject):
         self.left_button_is_pressed = False
         self.last_mouse_position = None
 
-    def create_checkable_button(self, label, checked, toolbar, on_click_fn):
+    def create_checkable_button(self, label, checked, toolbar, on_toggled_fn):
         action = QAction(label)
         action.setCheckable(True)  # Make it togglable
         action.setChecked(checked)  # Sync with initial state
-        action.triggered.connect(on_click_fn)
+        #action.triggered.connect(on_click_fn)
+        action.toggled.connect(on_toggled_fn)
 
         # Create a QToolButton for the action
         button = QToolButton(toolbar)
@@ -1281,15 +1282,19 @@ class SegmentationListManager(QObject):
                     self.print_status(f"Layer {layer_name} selected")
                     
 
-    def toggle_paint_tool(self):
+    def toggle_paint_tool(self, checked):
         
-        self.paint_active = not self.paint_active
-        self.paint_action.setChecked(self.paint_active)  # Uncheck the erase button
+        # no change, just return
+        if self.paint_active == checked:
+            return 
+        
+        # turn off both
+        self.erase_action.setChecked(False)
+        self.paint_action.setChecked(False)
 
-        # turn off erase action
-        self.erase_active = False  # Disable erase tool when brush is active
-        self.erase_action.setChecked(False)  # Uncheck the erase button
-
+        self.paint_active = checked
+        self.paint_action.setChecked(checked)
+        
         if self.paint_active:
             self.print_status("Paint tool activated")
         else:
@@ -1297,15 +1302,18 @@ class SegmentationListManager(QObject):
 
         self.enable_paintbrush(self.paint_active or self.erase_active)
 
-    def toggle_erase_tool(self):
+    def toggle_erase_tool(self, checked):
         
-        # toggle erase
-        self.erase_active = not self.erase_active
-        self.erase_action.setChecked(self.erase_active)
-        
-        # turn off paint action
-        self.paint_active = False  # Disable brush tool when erase is active
-        self.paint_action.setChecked(False)  # Uncheck the brush button
+        # no change, just return
+        if self.erase_active == checked:
+            return 
+
+        # turn off both
+        self.erase_action.setChecked(False)
+        self.paint_action.setChecked(False)
+
+        self.erase_active = checked
+        self.erase_action.setChecked(checked)
 
         if self.erase_active:
             self.print_status("Erase tool activated")
@@ -1963,14 +1971,14 @@ settings = QSettings("_settings.conf", QSettings.IniFormat)
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        
-        ### init ui ###    
-        self.setup_ui()
 
         # exclusive QActions
         self.exclusive_actions = []
-
         self.managers = []
+        self.vtk_image = None
+
+        ### init ui ###    
+        self.setup_ui()
 
         ##########################
         # Segmentation List Manager
@@ -1997,7 +2005,7 @@ class MainWindow(QMainWindow):
         self.point_list_manager.log_message.connect(self.handle_log_message) # Connect log messages to a handler
         self.managers.append(self.point_list_manager)
 
-        self.vtk_image = None
+
 
         # Load a sample DICOM file
         #dicom_file = "./data/jaw_cal.dcm"
@@ -2224,14 +2232,17 @@ class MainWindow(QMainWindow):
         # zoom toggle button
         zoom_action = QAction("Zoom", self)
         zoom_action.setCheckable(True)
-        zoom_action.triggered.connect(self.vtk_viewer.toggle_zooming_mode)
+        zoom_action.toggled.connect(self.vtk_viewer.toggle_zooming_mode)
         toolbar.addAction(zoom_action)        
 
         # pan toggle button
-        plan_action = QAction("Pan", self)
-        plan_action.setCheckable(True)
-        plan_action.triggered.connect(self.vtk_viewer.toggle_panning_mode)
-        toolbar.addAction(plan_action)        
+        pan_action = QAction("Pan", self)
+        pan_action.setCheckable(True)
+        pan_action.toggled.connect(self.vtk_viewer.toggle_panning_mode)
+        toolbar.addAction(pan_action)        
+
+        # pad is an exclusive
+        self.add_exclusive_actions([pan_action])
         
         # Add ruler toggle action
         add_ruler_action = QAction("Add Ruler", self)

@@ -38,11 +38,11 @@ class RangeSlider(QWidget):
         # Draw range
         low_pos = int(self.value_to_pos(self.low_value))
         high_pos = int(self.value_to_pos(self.high_value))
-        painter.setBrush(QColor(100, 100, 255))
+        painter.setBrush(QColor(150, 150, 150))
         painter.drawRect(low_pos, height // 2 - 5, high_pos - low_pos, 10)
 
         # Draw handles
-        painter.setBrush(QColor(255, 100, 100))
+        painter.setBrush(QColor(100, 100, 100))
         painter.drawEllipse(
             low_pos - self.slider_width // 2,
             height // 2 - self.slider_width // 2,
