@@ -16,6 +16,7 @@ class LineItem:
         self.visible = visible
         self.modified = False
         self.width = width
+        self.renderer = renderer
 
         # Create a line representation
         self.representation = vtk.vtkLineRepresentation()
@@ -29,13 +30,30 @@ class LineItem:
         self.widget.SetRepresentation(self.representation)
 
         # Add observer for interaction
-        self.widget.AddObserver("InteractionEvent", self.on_interaction)
+        self.on_interaction_observer_id = self.widget.AddObserver("InteractionEvent", self.on_interaction)
 
         # Add the widget to the interactor
         if interactor:
             self.widget.SetInteractor(interactor)
             self.widget.On()
 
+    def destroy(self):
+        from vtk_tools import remove_widget
+        remove_widget(self.widget, self.renderer)
+
+        # Delete the representation
+        if self.representation:
+            self.representation = None
+
+        # Clear attributes to help garbage collection
+        self.point1_w = None
+        self.point2_w = None
+        self.color = None
+        self.width = None
+        self.visible = None
+
+        print("LineItem successfully destroyed.")
+        
     def set_highlight(self, highlighted):
         """Highlight or unhighlight the line."""
         representation = self.widget.GetRepresentation()
@@ -44,7 +62,6 @@ class LineItem:
         else:
             representation.GetLineProperty().SetLineWidth(self.width)
             
-
     def set_visibility(self, visible):
         self.visible = visible
         self.widget.EnabledOn() if visible else self.widget.EnabledOff()
@@ -229,14 +246,11 @@ class LineListManager(QObject):
                 line = item_widget.line
                 name = item_widget.name
 
-                # Deselect previous line, if any
-                if previous:
-                    previous_widget = self.list_widget.itemWidget(previous)
-                    if previous_widget and isinstance(previous_widget, LineListItemWidget):
-                        previous_line = previous_widget.line
-#                        previous_line.widget.Off()  # Disable interaction for the previous line
-                        previous_line.set_highlight(False)
-
+                # Deselect all other lines
+                for name2 in self.lines:
+                    if name is not name2:
+                        self.lines[name2].set_highlight(False)
+                        
                 # Highlight and enable the selected line
                 line.widget.On()  # Enable interaction for the selected line
                 line.set_highlight(True)
@@ -335,8 +349,9 @@ class LineListManager(QObject):
                 line = item_widget.line
 
                 # Disable the line widget and remove it
-                from vtk_tools import remove_widget
-                remove_widget(line.widget, self.vtk_renderer)
+                #from vtk_tools import remove_widget
+                #remove_widget(line.widget, self.vtk_renderer)
+                line.destroy()
 
                 # Remove from the data list
                 del self.lines[name]

@@ -14,6 +14,7 @@ class PointItem:
         self.color = color
         self.visible = visible
         self.modified = False
+        self.renderer = renderer
 
         # Create a handle representation
         self.representation = vtk.vtkPointHandleRepresentation3D()
@@ -34,6 +35,22 @@ class PointItem:
             self.widget.SetInteractor(interactor)
             self.widget.EnabledOn()
 
+    def destroy(self):
+        # Disable and delete the widget
+        from vtk_tools import remove_widget
+        remove_widget(self.widget, self.renderer)
+
+        # Delete the representation
+        if self.representation:
+            self.representation = None
+
+        # Clear attributes to help garbage collection
+        self.coordinates = None
+        self.color = None
+        self.visible = None
+
+        print("PointItem successfully destroyed.")
+        
     def set_highlight(self, highlighted):
         if highlighted:
             #self.representation.SetHandleSize(20.0)
@@ -325,9 +342,8 @@ class PointListManager(QObject):
 
                 # turn off all others    
                 for key in self.points:
-                    p = self.points[key]
-                    if p is not point:
-                        p.set_highlight(False)
+                    if name is not key:
+                        self.points[key].set_highlight(False)
                     
                 # turn on the selected point
                 point.set_highlight(True)
@@ -365,9 +381,10 @@ class PointListManager(QObject):
                 point = item_widget.point
 
                 # Disable the point's widget and remove it
-                from vtk_tools import remove_widget
-                remove_widget(point.widget, self.vtk_renderer)
+                #from vtk_tools import remove_widget
+                #remove_widget(point.widget, self.vtk_renderer)
                 #point.widget.EnabledOff()
+                point.destroy()
 
                 # Remove from the data list
                 del self.points[name]

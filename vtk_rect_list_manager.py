@@ -14,12 +14,18 @@ class RectItem:
         self.color = color
         self.visible = visible
         self.modified = False
+        self.renderer = renderer
+        self.interactor = interactor
 
         # Compute initial rectangle corners
         self.corners = self.calculate_corners(corner1, corner2)
 
         # Create handles for corners
         self.handles = [self.create_handle(i, corner, color, renderer, interactor) for i, corner in enumerate(self.corners)]
+
+        # Create center handle
+        self.center_handle = self.create_center_handle(color, renderer, interactor)
+
 
         # Store renderer and interactor for updates
         self.renderer = renderer
@@ -31,6 +37,81 @@ class RectItem:
         self.set_color(self.color)
 
         renderer.AddActor(self.rect_actor)
+
+    def destroy(self):
+        # Remove handles from the renderer
+        if self.renderer:
+            for handle in self.handles:
+                # Remove the handle representation if attached to the renderer
+                if handle.GetRepresentation():
+                    self.renderer.RemoveActor(handle.GetRepresentation())
+                # Disconnect the handle widget from the interactor
+                handle.SetInteractor(None)
+                handle = None  # Clear the reference to the handle
+            
+            # Remove the center handle representation
+            if self.center_handle.GetRepresentation():
+                self.renderer.RemoveActor(self.center_handle.GetRepresentation())
+            self.center_handle.SetInteractor(None)
+            self.center_handle = None  # Clear the reference to the center handle
+
+            # Remove rectangle actor
+            if self.rect_actor:
+                self.renderer.RemoveActor(self.rect_actor)
+                self.rect_actor = None  # Clear the reference to the rectangle actor
+
+        # Clear references to renderer and interactor
+        self.renderer = None
+        self.interactor = None
+
+        # Reset other attributes (optional)
+        self.handles = []
+        self.center_handle = None
+
+        print("RectItem successfully destroyed.")
+
+    def create_center_handle(self, color, renderer, interactor):
+        """Create a handle at the rectangle's center."""
+        center = self.calculate_center()
+        handle_rep = vtk.vtkPointHandleRepresentation3D()
+        handle_rep.SetWorldPosition(center)
+        handle_rep.GetProperty().SetColor(color[0] / 255, color[1] / 255, color[2] / 255)
+
+        handle_widget = vtk.vtkHandleWidget()
+        handle_widget.SetRepresentation(handle_rep)
+        handle_widget.SetInteractor(interactor)
+        handle_widget.On()
+
+        handle_widget.AddObserver("InteractionEvent", self.update_center)
+
+        return handle_widget
+
+    def update_center(self, obj, event):
+        """Update the position of the rectangle when the center handle is moved."""
+        new_center = self.center_handle.GetRepresentation().GetWorldPosition()
+        old_center = self.calculate_center()
+
+        dx = new_center[0] - old_center[0]
+        dy = new_center[1] - old_center[1]
+
+        # Update all corners
+        for i, corner in enumerate(self.corners):
+            self.corners[i] = [corner[0] + dx, corner[1] + dy, corner[2]]
+
+        # Update handle positions
+        for i, handle in enumerate(self.handles):
+            handle.GetRepresentation().SetWorldPosition(self.corners[i])
+
+        # Update rectangle actor
+        self.update_rectangle()
+
+
+    def calculate_center(self):
+        """Calculate the center of the rectangle."""
+        x_center = (self.corners[0][0] + self.corners[2][0]) / 2.0
+        y_center = (self.corners[0][1] + self.corners[2][1]) / 2.0
+        z_center = self.corners[0][2]  # Assuming 2D rectangle in the same Z-plane
+        return [x_center, y_center, z_center]
 
     def calculate_corners(self, corner1, corner2):
         """Calculate all four corners of the rectangle given two diagonal corners."""
@@ -111,6 +192,7 @@ class RectItem:
         self.corners[1][1] = self.corners[0][1]  # Adjust bottom-right Y
         self.corners[3][0] = self.corners[0][0]  # Adjust top-left X
         self.update_rectangle()
+       
 
     def update_bottom_right(self, obj, event):
         """Update rectangle when bottom-right corner is moved."""
@@ -118,6 +200,7 @@ class RectItem:
         self.corners[0][1] = self.corners[1][1]  # Adjust bottom-left Y
         self.corners[2][0] = self.corners[1][0]  # Adjust top-right X
         self.update_rectangle()
+        
 
     def update_top_right(self, obj, event):
         """Update rectangle when top-right corner is moved."""
@@ -125,6 +208,7 @@ class RectItem:
         self.corners[1][0] = self.corners[2][0]  # Adjust bottom-right X
         self.corners[3][1] = self.corners[2][1]  # Adjust top-left Y
         self.update_rectangle()
+        
 
     def update_top_left(self, obj, event):
         """Update rectangle when top-left corner is moved."""
@@ -132,6 +216,7 @@ class RectItem:
         self.corners[0][0] = self.corners[3][0]  # Adjust bottom-left X
         self.corners[2][1] = self.corners[3][1]  # Adjust top-right Y
         self.update_rectangle()
+        
 
     def update_rectangle(self):
         """Update rectangle shape and reposition handles."""
@@ -154,6 +239,10 @@ class RectItem:
         poly_data.Modified()
 
         self.modified = True
+
+        # Update center handle
+        self.center_handle.GetRepresentation().SetWorldPosition(self.calculate_center())
+
 
     def set_visibility(self, visible):
         self.visible = visible
@@ -279,7 +368,7 @@ class RectListItemWidget(QWidget):
 
     def remove_rect_clicked(self):
         self.manager.remove_rect_by_name(self.name)
-
+        
 
 class RectListManager(QObject):
     log_message = pyqtSignal(str, str)  # For emitting log messages
@@ -300,6 +389,7 @@ class RectListManager(QObject):
         self.list_widget.clear()
         self.vtk_renderer.GetRenderWindow().Render()
         self.log_message.emit("INFO", "All rectangles cleared.")
+        
 
     def setup_ui(self):
         """Set up the UI with a dockable widget."""
@@ -332,11 +422,9 @@ class RectListManager(QObject):
                 rect = item_widget.rect
                 name = item_widget.name
 
-                if previous:
-                    previous_widget = self.list_widget.itemWidget(previous)
-                    if previous_widget:
-                        previous_rect = previous_widget.rect
-                        previous_rect.set_highlight(False)
+                for key in self.rects:
+                    if key is not name:
+                        self.rects[key].set_highlight(False)
 
                 rect.set_highlight(True)
                 self.active_rect_name = name
@@ -390,26 +478,113 @@ class RectListManager(QObject):
         self.list_widget.setItemWidget(item, item_widget)
         self.list_widget.setCurrentItem(item)
 
+    def find_list_widget_item_by_text(self, text):
+        """
+        Find a QListWidgetItem in the list widget based on its text.
+
+        :param list_widget: The QListWidget instance.
+        :param text: The text of the item to find.
+        :return: The matching QListWidgetItem or None if not found.
+        """
+        list_widget = self.list_widget
+
+        for index in range(list_widget.count()):
+            item = list_widget.item(index)
+            item_widget = list_widget.itemWidget(item)
+
+            if item_widget.name == text:
+                return item, item_widget
+        return None
+
     def remove_rect_by_name(self, name):
         if name in self.rects:
-            item = None
-            for i in range(self.list_widget.count()):
-                list_item = self.list_widget.item(i)
-                item_widget = self.list_widget.itemWidget(list_item)
-                if item_widget.name == name:
-                    item = list_item
-                    break
+            item, item_widget = self.find_list_widget_item_by_text(name)
 
-            if item:
-                rect = self.rects[name]
-                rect.widget.Off()
+            if item is not None:
+                rect = item_widget.rect
+
+                # Disable the line widget and remove it
+                #from vtk_tools import remove_widget
+                #remove_widget(line.widget, self.vtk_renderer)
+                rect.destroy()
+
+                # Remove from the data list
                 del self.rects[name]
+
+                # Remove from the list widget
                 self.list_widget.takeItem(self.list_widget.row(item))
 
-                if self.list_widget.count() > 0:
+                # Select the last item in the list widget (to activate it)
+                if name == self.active_rect_name and self.list_widget.count() > 0:
                     self.list_widget.setCurrentRow(self.list_widget.count() - 1)
+            
+                self.vtk_renderer.GetRenderWindow().Render()  # Refresh the renderer
+                
+                self._modified = True
+            else:
+                logger.error(f'Rect item of name {name} not found!')
+        else:
+            logger.error(f'Remove rect failed. the line with name {name} in the line list')
+    
 
-                self.vtk_renderer.GetRenderWindow().Render()
+    def update_rect_name(self, old_name, new_name):
+        if old_name in self.rects:
+            self.rects[new_name] = self.rects.pop(old_name)
 
     def on_rect_changed(self, name):
         self.vtk_renderer.GetRenderWindow().Render()
+
+    def save_state(self, data_dict, data_dir):
+        """Save the state of all rectangles to the workspace."""
+        rects_data = []
+        for name, rect in self.rects.items():
+            rects_data.append({
+                "name": name,
+                "corner1": list(rect.corner1),
+                "corner2": list(rect.corner2),
+                "color": rect.color,
+            })
+        data_dict["rects"] = rects_data
+        self.reset_modified()  # Reset modified state after saving
+        self.log_message.emit("INFO", "Rectangles state saved successfully.")
+
+
+    def load_state(self, data_dict, data_dir, aux_data):
+        """Load the state of all rectangles from the workspace."""
+        self.clear()  # Clear existing rectangles before loading new ones
+
+        if "rects" not in data_dict:
+            self.log_message.emit("WARNING", "No rectangles found in workspace to load.")
+            return
+
+        for rect_data in data_dict["rects"]:
+            try:
+                name = rect_data["name"]
+                corner1 = rect_data["corner1"]
+                corner2 = rect_data["corner2"]
+                color = rect_data["color"]
+                visible = True
+
+                # Add the rectangle to the manager
+                self.add_rect(corner1=corner1, corner2=corner2, color=color, visible=visible, name=name)
+
+            except Exception as e:
+                self.log_message.emit("ERROR", f"Failed to load rectangle {rect_data.get('name', 'Unnamed')}: {str(e)}")
+
+        self._modified = False  # Reset modified state after loading
+        self.log_message.emit("INFO", "Rectangles state loaded successfully.")
+
+    def reset_modified(self):
+        self._modified = False
+        for _, rect in self.rects.items():
+            rect.modified = False
+
+    def modified(self):
+        if self._modified:
+            return True
+
+        for _, rect in self.rects.items():
+            if rect.modified:
+                return True
+
+        return False
