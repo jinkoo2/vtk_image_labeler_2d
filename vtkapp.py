@@ -647,6 +647,7 @@ settings = QSettings("_settings.conf", QSettings.IniFormat)
 from vtk_segmentation_list_manager import SegmentationListManager
 from vtk_point_list_manager import PointListManager
 from vtk_line_list_manager import LineListManager
+from vtk_rect_list_manager import RectListManager
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -704,6 +705,24 @@ class MainWindow(QMainWindow):
         self.line_list_dock_widget = dock
 
         self.tabifyDockWidget(self.segmentation_list_dock_widget, self.line_list_dock_widget)
+
+        ##########################
+        # Rect List Manager
+        self.rect_list_manager = RectListManager(self.vtk_viewer)
+        toolbar, dock = self.rect_list_manager.setup_ui()
+        if toolbar is not None:
+            self.addToolBar(Qt.TopToolBarArea, toolbar)
+        if dock is not None:
+            self.addDockWidget(Qt.RightDockWidgetArea, dock)
+
+        self.add_exclusive_actions(self.rect_list_manager.get_exclusive_actions())
+        self.rect_list_manager.log_message.connect(self.handle_log_message) # Connect log messages to a handler
+        self.managers.append(self.rect_list_manager)
+        self.rect_list_dock_widget = dock
+
+        self.tabifyDockWidget(self.segmentation_list_dock_widget, self.rect_list_dock_widget)
+
+
 
         # Load a sample DICOM file
         #dicom_file = "./data/jaw_cal.dcm"
