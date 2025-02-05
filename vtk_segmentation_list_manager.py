@@ -450,6 +450,7 @@ class SegmentationListManager(QObject):
         save_vtk_image_using_sitk(segmentation, file_path)
 
     def save_state(self,data_dict, data_dir):
+        import os
         # Save segmentation layers as '.mha'
         data_dict["segmentations"] = {}
 

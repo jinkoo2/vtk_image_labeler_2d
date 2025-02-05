@@ -1,4 +1,4 @@
-import sys
+import os
 import numpy as np
 import SimpleITK as sitk
 from PyQt5.QtWidgets import (
@@ -10,8 +10,6 @@ from PyQt5.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QIcon
 import cv2
 
 from PyQt5.QtWidgets import QWidget, QHBoxLayout, QCheckBox, QLabel, QListWidgetItem, QColorDialog
-
-import os
 
 import numpy as np
 
@@ -591,6 +589,7 @@ class SegmentationListManager:
 
 
     def save_state(self,data_dict, data_dir):
+        import os
         # Save segmentation layers as '.mha'
         data_dict["segmentation_layers"] = {}
 
