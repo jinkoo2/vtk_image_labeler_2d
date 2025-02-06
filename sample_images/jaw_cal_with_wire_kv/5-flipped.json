@@ -1,0 +1,49 @@
+{
+    "window_settings": {
+        "level": 76508.0,
+        "width": 77412.0,
+        "range_min": 37802.0,
+        "range_max": 131070.0
+    },
+    "segmentations": {
+        "Layer 1": {
+            "file": "Layer 1.mhd",
+            "color": [
+                255,
+                0,
+                0
+            ],
+            "alpha": 0.8
+        },
+        "Layer 2": {
+            "file": "Layer 2.mhd",
+            "color": [
+                0,
+                255,
+                0
+            ],
+            "alpha": 0.8
+        },
+        "Layer 3": {
+            "file": "Layer 3.mhd",
+            "color": [
+                0,
+                0,
+                255
+            ],
+            "alpha": 0.8
+        },
+        "Layer 4": {
+            "file": "Layer 4.mhd",
+            "color": [
+                255,
+                255,
+                0
+            ],
+            "alpha": 0.8
+        }
+    },
+    "points": [],
+    "lines": [],
+    "rects": []
+}

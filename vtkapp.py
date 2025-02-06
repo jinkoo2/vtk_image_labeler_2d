@@ -307,6 +307,8 @@ class VTKViewer(QWidget):
 
         self.vtk_image = None
 
+        self.render()
+
     def print_status(self, msg):
         if self.main_window is not None:
             self.main_window.print_status(msg)
@@ -609,6 +611,9 @@ class VTKViewer(QWidget):
         self.painting_enabled = enabled
         self.brush_actor.SetVisibility(enabled)  # Show brush if enabled
         self.render_window.Render()
+
+    def render(self):
+        self.get_render_window().Render()
 
 
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QListWidget, QPushButton, QToolButton, QHBoxLayout
@@ -1070,6 +1075,10 @@ class MainWindow(QMainWindow):
             self.range_slider.update()  
             
             self.vtk_viewer.set_vtk_image(self.vtk_image, self.range_slider.get_width()/4, self.range_slider.get_center())
+
+
+            self.setWindowTitle(f"Image Labeler 2D - {os.path.basename(file_path)}")
+            
             logger.info("Image loaded successfully")
         except Exception as e:
             logger.error(f"Failed to load image:{e}") 
@@ -1117,6 +1126,9 @@ class MainWindow(QMainWindow):
             manager.clear()
 
         self.vtk_viewer.clear()
+
+
+     
 
         self.image_path = None
         self.vtk_image = None
