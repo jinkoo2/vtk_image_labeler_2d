@@ -664,89 +664,6 @@ class MainWindow(QMainWindow):
         self.vtk_image = None
 
         ### init ui ###    
-        self.setup_ui()
-
-        ##########################
-        # Segmentation List Manager
-        self.segmentation_list_manager = SegmentationListManager(self.vtk_viewer)
-        toolbar, dock = self.segmentation_list_manager.setup_ui()
-        if toolbar is not None:
-            self.addToolBar(Qt.TopToolBarArea, toolbar)
-        if dock is not None:
-            self.addDockWidget(Qt.RightDockWidgetArea, dock)
-        self.add_exclusive_actions(self.segmentation_list_manager.get_exclusive_actions()) 
-        self.segmentation_list_manager.log_message.connect(self.handle_log_message) # Connect log messages to a handler
-        self.managers.append(self.segmentation_list_manager)
-        self.segmentation_list_dock_widget = dock
-
-        ##########################
-        # Point List Manager
-        self.point_list_manager = PointListManager(self.vtk_viewer)
-        toolbar, dock = self.point_list_manager.setup_ui()
-        if toolbar is not None:
-            self.addToolBar(Qt.TopToolBarArea, toolbar)
-        if dock is not None:
-            self.addDockWidget(Qt.RightDockWidgetArea, dock)
-
-        self.add_exclusive_actions(self.point_list_manager.get_exclusive_actions())
-        self.point_list_manager.log_message.connect(self.handle_log_message) # Connect log messages to a handler
-        self.managers.append(self.point_list_manager)
-        self.point_list_dock_widget = dock
-
-        self.tabifyDockWidget(self.segmentation_list_dock_widget, self.point_list_dock_widget)
-
-        ##########################
-        # Line List Manager
-        self.line_list_manager = LineListManager(self.vtk_viewer)
-        toolbar, dock = self.line_list_manager.setup_ui()
-        if toolbar is not None:
-            self.addToolBar(Qt.TopToolBarArea, toolbar)
-        if dock is not None:
-            self.addDockWidget(Qt.RightDockWidgetArea, dock)
-
-        self.add_exclusive_actions(self.line_list_manager.get_exclusive_actions())
-        self.line_list_manager.log_message.connect(self.handle_log_message) # Connect log messages to a handler
-        self.managers.append(self.line_list_manager)
-        self.line_list_dock_widget = dock
-
-        self.tabifyDockWidget(self.segmentation_list_dock_widget, self.line_list_dock_widget)
-
-        ##########################
-        # Rect List Manager
-        self.rect_list_manager = RectListManager(self.vtk_viewer)
-        toolbar, dock = self.rect_list_manager.setup_ui()
-        if toolbar is not None:
-            self.addToolBar(Qt.TopToolBarArea, toolbar)
-        if dock is not None:
-            self.addDockWidget(Qt.RightDockWidgetArea, dock)
-
-        self.add_exclusive_actions(self.rect_list_manager.get_exclusive_actions())
-        self.rect_list_manager.log_message.connect(self.handle_log_message) # Connect log messages to a handler
-        self.managers.append(self.rect_list_manager)
-        self.rect_list_dock_widget = dock
-
-        self.tabifyDockWidget(self.segmentation_list_dock_widget, self.rect_list_dock_widget)
-
-
-
-        # Load a sample DICOM file
-        #dicom_file = "./data/jaw_cal.dcm"
-        #self.load_dicom(dicom_file)
-
-        logger.info("MainWindow initialized")
-
-    def closeEvent(self, event):
-        """
-        Override the closeEvent to log application or window close.
-        """
-        logger.info("MainWindow is closing.")
-
-        
-
-        super().closeEvent(event)  # Call the base class method to ensure proper behavior
-
-
-    def setup_ui(self):
         self.setWindowTitle("Image Labeler 2D")
         self.setGeometry(100, 100, 1024, 786)
 
@@ -760,14 +677,132 @@ class MainWindow(QMainWindow):
         self.main_widget.setLayout(self.layout)
         self.setCentralWidget(self.main_widget)
 
-        # Add the File menu
+        # Add the menus and toolbars
         self.create_menu()
         self.create_file_toolbar()
         self.create_view_toolbar()
 
+        ##########################
+        # Segmentation List Manager
+        self.segmentation_list_manager = SegmentationListManager(self.vtk_viewer, "Segmentations")
+        toolbar, dock = self.segmentation_list_manager.setup_ui()
+        if toolbar is not None:
+            self.addToolBar(Qt.TopToolBarArea, toolbar)
+        if dock is not None:
+            self.addDockWidget(Qt.RightDockWidgetArea, dock)
+        self.add_exclusive_actions(self.segmentation_list_manager.get_exclusive_actions()) 
+        self.segmentation_list_manager.log_message.connect(self.handle_log_message) # Connect log messages to a handler
+        self.managers.append(self.segmentation_list_manager)
+        self.segmentation_list_dock_widget = dock
+        self.add_manager_visibility_toggle_menu(self.segmentation_list_manager, True)
+        
+
+        ##########################
+        # Point List Manager
+        self.point_list_manager = PointListManager(self.vtk_viewer, "Points")
+        toolbar, dock = self.point_list_manager.setup_ui()
+        if toolbar is not None:
+            self.addToolBar(Qt.TopToolBarArea, toolbar)
+        if dock is not None:
+            self.addDockWidget(Qt.RightDockWidgetArea, dock)
+
+        self.add_exclusive_actions(self.point_list_manager.get_exclusive_actions())
+        self.point_list_manager.log_message.connect(self.handle_log_message) # Connect log messages to a handler
+        self.managers.append(self.point_list_manager)
+        self.point_list_dock_widget = dock
+        self.add_manager_visibility_toggle_menu(self.point_list_manager, True)
+
+        self.tabifyDockWidget(self.segmentation_list_dock_widget, self.point_list_dock_widget)
+
+        ##########################
+        # Line List Manager
+        self.line_list_manager = LineListManager(self.vtk_viewer, "Lines")
+        toolbar, dock = self.line_list_manager.setup_ui()
+        if toolbar is not None:
+            self.addToolBar(Qt.TopToolBarArea, toolbar)
+        if dock is not None:
+            self.addDockWidget(Qt.RightDockWidgetArea, dock)
+
+        self.add_exclusive_actions(self.line_list_manager.get_exclusive_actions())
+        self.line_list_manager.log_message.connect(self.handle_log_message) # Connect log messages to a handler
+        self.managers.append(self.line_list_manager)
+        self.line_list_dock_widget = dock
+        self.add_manager_visibility_toggle_menu(self.line_list_manager, True)
+
+        self.tabifyDockWidget(self.segmentation_list_dock_widget, self.line_list_dock_widget)
+
+        ##########################
+        # Rect List Manager
+        self.rect_list_manager = RectListManager(self.vtk_viewer, "Rects")
+        toolbar, dock = self.rect_list_manager.setup_ui()
+        if toolbar is not None:
+            self.addToolBar(Qt.TopToolBarArea, toolbar)
+        if dock is not None:
+            self.addDockWidget(Qt.RightDockWidgetArea, dock)
+
+        self.add_exclusive_actions(self.rect_list_manager.get_exclusive_actions())
+        self.rect_list_manager.log_message.connect(self.handle_log_message) # Connect log messages to a handler
+        self.managers.append(self.rect_list_manager)
+        self.rect_list_dock_widget = dock
+        self.add_manager_visibility_toggle_menu(self.rect_list_manager, True)
+
+        self.tabifyDockWidget(self.segmentation_list_dock_widget, self.rect_list_dock_widget)
+
+        ##########################
+        # nnUNet client manager
+        from nnunet_client_manager import nnUNetDatasetManager
+        self.nnunet_client_manager = nnUNetDatasetManager(self.vtk_viewer, "nnUNet Dashboard")
+        toolbar, dock = self.nnunet_client_manager.setup_ui()
+        if toolbar is not None:
+            self.addToolBar(Qt.TopToolBarArea, toolbar)
+        if dock is not None:
+            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+
+        self.add_exclusive_actions(self.nnunet_client_manager.get_exclusive_actions())
+        self.nnunet_client_manager.log_message.connect(self.handle_log_message) # Connect log messages to a handler
+        self.managers.append(self.nnunet_client_manager)
+        self.nnunet_client_manager_widget = dock
+        self.add_manager_visibility_toggle_menu(self.nnunet_client_manager, True)
+
+        #self.tabifyDockWidget(self.nnunet_client_manager, self.rect_list_dock_widget)
+
         # Add status bar
         self.status_bar = self.statusBar()
         self.status_bar.showMessage("Ready")  # Initial message
+
+        logger.info("MainWindow initialized")
+
+        # Load a sample DICOM file
+        #dicom_file = "./data/jaw_cal.dcm"
+        #self.load_dicom(dicom_file)
+
+
+    def add_manager_visibility_toggle_menu(self, manager, visible):
+        toggle_action = QAction(manager.name, self)
+        toggle_action.setCheckable(True)
+        toggle_action.setChecked(visible)
+        toggle_action.triggered.connect(lambda checked, m=manager: self.toggle_dock_widget(m.dock_widget, checked))
+        if visible:
+            manager.dock_widget.show()
+        else: 
+            manager.dock_widget.hide()
+
+        self.managers_menu.addAction(toggle_action)
+        
+
+    def closeEvent(self, event):
+        """
+        Override the closeEvent to log application or window close.
+        """
+        logger.info("MainWindow is closing.")
+
+        
+
+        super().closeEvent(event)  # Call the base class method to ensure proper behavior
+
+       
+
+        
 
     def handle_log_message(self, log_type, message):
         """
@@ -870,6 +905,9 @@ class MainWindow(QMainWindow):
         print_objects_action.triggered.connect(self.vtk_viewer.print_properties)
         file_menu.addAction(print_objects_action)
         
+    def create_managers_menu(self, view_menu):
+        self.managers_menu = view_menu.addMenu("Managers")
+
     def create_view_menu(self, view_menu):
         
         # Zoom In
@@ -887,6 +925,8 @@ class MainWindow(QMainWindow):
         zoom_reset_action.triggered.connect(self.vtk_viewer.zooming.zoom_reset)
         view_menu.addAction(zoom_reset_action)
         
+        self.create_managers_menu(view_menu)
+
         # Add Toggle Button
         toggle_image_button = QAction("Toggle Base Image", self)
         toggle_image_button.setCheckable(True)
@@ -1270,7 +1310,17 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"Failed to load workspace: {e}", exc_info=True)
             self.print_status("Failed to load workspace. Check logs for details.")
+  
+    def toggle_dock_widget(self, dock_widget, checked):
+        # Toggle the visibility of the dock widget based on the checked state
+        if checked:
+            dock_widget.show()
+        else:
+            dock_widget.hide()
 
+
+
+        
 
 
 if __name__ == "__main__":

@@ -308,12 +308,13 @@ class SegmentationListManager(QObject):
     # Signal to emit log messages
     log_message = pyqtSignal(str, str)  # Format: log_message(type, message)
 
-    def __init__(self, vtk_viewer):
+    def __init__(self, vtk_viewer, name):
         super().__init__()  # Initialize QObject
 
         self.vtk_viewer = vtk_viewer
         self.vtk_renderer = vtk_viewer.get_renderer()
         self.active_layer_name = None
+        self.name = name
 
         # segmentation data
         self.segmentation_layers = {}
@@ -338,6 +339,7 @@ class SegmentationListManager(QObject):
         for _, data in self.segmentation_layers.items():
             data.modified = False
 
+       
     def modified(self):
         if self._modified:
             return True
@@ -352,6 +354,10 @@ class SegmentationListManager(QObject):
     def setup_ui(self):   
         toolbar = self.create_toolbar()
         dock = self.create_dock_widget()
+
+        self.toolbar = toolbar
+        self.dock_widget = dock
+
         return None, dock
 
     def create_toolbar(self):
@@ -379,7 +385,7 @@ class SegmentationListManager(QObject):
     def create_dock_widget(self):
         
         # Create a dockable widget
-        dock = QDockWidget("Segmentations")
+        dock = QDockWidget(self.name)
 
         # Layer manager layout
         main_widget = QWidget()

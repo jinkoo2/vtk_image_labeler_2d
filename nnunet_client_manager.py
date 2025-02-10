@@ -8,7 +8,7 @@ from PyQt5.QtGui import QColor
 from logger import logger
 from color_rotator import ColorRotator
 
-class PointItem:
+class DatasetItem:
     def __init__(self, coordinates, color=[255, 0, 0], visible=True, renderer=None, interactor=None):
         self.coordinates = coordinates
         self.color = color
@@ -68,7 +68,7 @@ class PointItem:
         print(f"Point moved to: {self.coordinates}")
 
 
-class PointListItemWidget(QWidget):
+class DatasetListItemWidget(QWidget):
     def __init__(self, name, point, manager):
         super().__init__()
         self.manager = manager
@@ -198,8 +198,7 @@ class PointListItemWidget(QWidget):
 
             self.manager.on_point_changed(new_name)
 
-
-class PointListManager(QObject):
+class nnUNetDatasetManager(QObject):
     log_message = pyqtSignal(str, str)  # For emitting log messages
 
     def __init__(self, vtk_viewer, name):
@@ -236,6 +235,13 @@ class PointListManager(QObject):
         widget = QWidget()
         layout = QVBoxLayout()
 
+        # Server URL input (text widget)
+        self.server_url_input = QLineEdit()
+        self.server_url_input.setText("http://127.0.0.1:8000")  # Set initial URL
+        self.server_url_input.setPlaceholderText("Server URL here")  # Placeholder text
+        self.server_url_input.setToolTip("Enter the server URL.")
+        layout.addWidget(self.server_url_input)
+
         # List widget for points
         self.list_widget = QListWidget()
         self.list_widget.currentItemChanged.connect(self.on_current_item_changed)
@@ -243,13 +249,9 @@ class PointListManager(QObject):
 
         # Buttons to manage points
         button_layout = QHBoxLayout()
-        add_point_button = QPushButton("Add Point")
-        add_point_button.clicked.connect(self.add_point_clicked)
-        button_layout.addWidget(add_point_button)
-
-        edit_point_button = QPushButton("Edit Points")
-        edit_point_button.clicked.connect(self.edit_points_clicked)
-        button_layout.addWidget(edit_point_button)
+        ping_button = QPushButton("Ping")
+        ping_button.clicked.connect(self.ping_clicked)
+        button_layout.addWidget(ping_button)
 
         layout.addLayout(button_layout)
         widget.setLayout(layout)
@@ -263,6 +265,9 @@ class PointListManager(QObject):
 
         return toolbar, dock
 
+    def get_server_url(self):
+        return self.server_url_input.text()
+
     def get_exclusive_actions(self):
         return []
 
@@ -274,7 +279,7 @@ class PointListManager(QObject):
     
     def add_point(self, coordinates, color=[255, 0, 0], visible=True, name=None):
         """Add a new editable point."""
-        editable_point = PointItem(
+        editable_point = DatasetItem(
             coordinates=coordinates,
             color=color,
             visible=visible,
@@ -287,7 +292,7 @@ class PointListManager(QObject):
 
         self.points[name]= editable_point
 
-        item_widget = PointListItemWidget(name, editable_point, self)
+        item_widget = DatasetListItemWidget(name, editable_point, self)
         item = QListWidgetItem()
         item.data = editable_point
         item.setSizeHint(item_widget.sizeHint())
@@ -298,13 +303,6 @@ class PointListManager(QObject):
         self._modified = True
 
         self.log_message.emit("INFO", f"Added point at {coordinates}")
-
-    def edit_points_clicked(self):
-        """Toggle editing mode for points."""
-        self.editing_points_enabled = not self.editing_points_enabled
-        for point in self.points:
-            point.set_visibility(self.editing_points_enabled)
-        self.log_message.emit("INFO", f"Point editing {'enabled' if self.editing_points_enabled else 'disabled'}.")
 
     def on_point_changed(self, name):
         self._modified = True
@@ -339,7 +337,7 @@ class PointListManager(QObject):
             # Retrieve the custom widget associated with the current QListWidgetItem
             item_widget = self.list_widget.itemWidget(current)
             
-            if item_widget and isinstance(item_widget, PointListItemWidget):
+            if item_widget and isinstance(item_widget, DatasetListItemWidget):
 
                 point = item_widget.point
                 name = item_widget.name
@@ -358,22 +356,37 @@ class PointListManager(QObject):
 
                 self.vtk_renderer.GetRenderWindow().Render()
 
-    def add_point_clicked(self):
-        """Handle the 'Add Point' button click."""
-        # Add a point at the center of the current view
-        camera = self.vtk_renderer.GetActiveCamera()
-        focal_point = camera.GetFocalPoint()
+    def show_popup(self, title, message, icon=None):
+        from PyQt5.QtWidgets import QMessageBox
+
+        """
+        Display a QMessageBox with the specified title, message, and icon.
+        """
+        msg_box = QMessageBox(self.dock_widget)
+        msg_box.setWindowTitle(title)
+        msg_box.setText(message)
+
+        if icon is None:
+            icon = QMessageBox.Information
+            
+        msg_box.setIcon(icon)
         
-        # move closer to camera, so that it's visible.
-        focal_point = [focal_point[0], focal_point[1], focal_point[2]+1.0]
-        
-        name = self.generate_unique_name()
+        msg_box.exec_()
 
-        self.add_point(coordinates=focal_point, color=self.color_rotator.next(), visible=True, name=name)
+    def ping_clicked(self):
+        from nnunet_client import get_ping, ServerError
+        import requests
+        try:
+            response_data = get_ping(self.get_server_url())
+            print(f'response_data={response_data}')
+            self.show_popup("Response", response_data["msg"])
+        except ServerError as e:
+            print(f"Server error: {e}")
+        except requests.exceptions.RequestException as e:
+            print(f"Request failed: {e}")
 
-        self._modified = True
-
-    
+       
+            
 
     def remove_point_by_name(self, name):
         

@@ -186,12 +186,13 @@ class LineListItemWidget(QWidget):
 class LineListManager(QObject):
     log_message = pyqtSignal(str, str)  # For emitting log messages
 
-    def __init__(self, vtk_viewer):
+    def __init__(self, vtk_viewer, name):
         super().__init__()
         self.vtk_viewer = vtk_viewer
         self.vtk_renderer = vtk_viewer.get_renderer()
         self.lines = {}  # Dictionary of LineItem objects
         self.active_line_name = None
+        self.name = name
 
         self.color_rotator = ColorRotator()
 
@@ -209,7 +210,7 @@ class LineListManager(QObject):
 
     def setup_ui(self):
         """Set up the UI with a dockable widget."""
-        dock = QDockWidget("Lines")
+        dock = QDockWidget(self.name)
         widget = QWidget()
         layout = QVBoxLayout()
 
@@ -228,6 +229,9 @@ class LineListManager(QObject):
         layout.addLayout(button_layout)
         widget.setLayout(layout)
         dock.setWidget(widget)
+
+        self.toolbar = None
+        self.dock_widget = dock
 
         return None, dock
 

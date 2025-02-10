@@ -373,12 +373,13 @@ class RectListItemWidget(QWidget):
 class RectListManager(QObject):
     log_message = pyqtSignal(str, str)  # For emitting log messages
 
-    def __init__(self, vtk_viewer):
+    def __init__(self, vtk_viewer, name):
         super().__init__()
         self.vtk_viewer = vtk_viewer
         self.vtk_renderer = vtk_viewer.get_renderer()
         self.rects = {}  # Dictionary of RectItem objects
         self.active_rect_name = None
+        self.name = name
 
     def clear(self):
         """Clear all rectangles and their widgets."""
@@ -393,7 +394,7 @@ class RectListManager(QObject):
 
     def setup_ui(self):
         """Set up the UI with a dockable widget."""
-        dock = QDockWidget("Rectangles")
+        dock = QDockWidget(self.name)
         widget = QWidget()
         layout = QVBoxLayout()
 
@@ -412,6 +413,9 @@ class RectListManager(QObject):
         layout.addLayout(button_layout)
         widget.setLayout(layout)
         dock.setWidget(widget)
+
+        self.toolbar = None
+        self.dock_widget = dock
 
         return None, dock
 
