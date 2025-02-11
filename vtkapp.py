@@ -777,6 +777,7 @@ class MainWindow(QMainWindow):
         #self.load_dicom(dicom_file)
 
 
+
     def add_manager_visibility_toggle_menu(self, manager, visible):
         toggle_action = QAction(manager.name, self)
         toggle_action.setCheckable(True)
