@@ -11,6 +11,9 @@ from color_rotator import ColorRotator
 import nnunet_service 
 import requests
 
+from config import get_config
+conf = get_config()
+
 class NewDatasetDialog(QDialog):
     """Popup window for creating a new dataset."""
 
@@ -104,9 +107,10 @@ class nnUNetDatasetManager(QObject):
 
     log_message = pyqtSignal(str, str)  # For emitting log messages
 
-    def __init__(self, vtk_viewer, name):
+    def __init__(self, segmentation_list_manager, name):
         super().__init__()
         self.name = name
+        self.segmentation_list_manager = segmentation_list_manager
         self.color_rotator = ColorRotator()
         self.datasets = []  # Ensure datasets list is initialized
 
@@ -155,6 +159,17 @@ class nnUNetDatasetManager(QObject):
         self.new_dataset_button = QPushButton("New Dataset")
         self.new_dataset_button.clicked.connect(self.open_new_dataset_dialog)
         button_layout.addWidget(self.new_dataset_button)
+
+        # Post image and label (training)
+        self.post_image_and_labels_for_training_button = QPushButton("Push Images for Training")
+        self.post_image_and_labels_for_training_button.clicked.connect(self.post_image_and_labels_for_training_clicked)
+        button_layout.addWidget(self.post_image_and_labels_for_training_button)
+
+        # Post image and label (test)
+        self.post_image_and_labels_for_test_button = QPushButton("Push Images for Test")
+        self.post_image_and_labels_for_test_button.clicked.connect(self.post_image_and_labels_for_test_clicked)
+        button_layout.addWidget(self.post_image_and_labels_for_test_button)
+
 
         layout.addLayout(button_layout)
         widget.setLayout(layout)
@@ -211,6 +226,67 @@ class nnUNetDatasetManager(QObject):
                     self.log_message.emit("ERROR", f"Request failed: {e}")
         
 
+    def post_image_and_labels_for_training_clicked(self):
+        self.post_image_and_labels("train")
+
+    def post_image_and_labels_for_test_clicked(self):
+        self.post_image_and_labels("test")
+
+    def post_image_and_labels(self, images_for):
+        selected_text = self.dropdown.currentText()
+        selected_index = self.dropdown.currentIndex()
+
+        if selected_text is "" or selected_index is -1:
+            self.log_message.emit("INFO", "Please select a dataset to add images to")
+            return 
+
+        dataset = self.datasets[selected_index]
+
+        """posting the images and labels"""
+        try:
+            if "id" in dataset:
+                dataset_id = dataset["id"]
+            else:
+                dataset_id = selected_text
+
+            # get vtk image and label list
+            vtk_image = self.segmentation_list_manager.get_base_vtk_image()
+            vtk_label_list = self.segmentation_list_manager.get_segmentation_vtk_images()
+
+            # combine the labels 
+            from itkvtk import vtk_to_sitk
+            sitk_label_list = [vtk_to_sitk(vtk_label) for vtk_label in vtk_label_list]
+            from itk import combine_sitk_labels, save_sitk_image
+            sitk_labels = combine_sitk_labels(sitk_label_list)
+
+            # save the files to a temporary folders
+            temp_dir = conf['temp_dir']
+            import time
+            sec = int(time.time())  # Current time in seconds
+            import os
+            image_path = os.path.join(temp_dir, f'image_{sec}.mha')
+            labels_path = os.path.join(temp_dir, f'labels_{sec}.mha')
+
+            print(f'saving image to {image_path}')
+            save_sitk_image(vtk_to_sitk(vtk_image), image_path)
+            
+            print(f'saving labels to {labels_path}')
+            save_sitk_image(sitk_labels, labels_path)
+
+            dataset_updated = nnunet_service.post_image_and_labels(self.get_server_url(), dataset_id, images_for, image_path, labels_path)
+            print(f"response_data={dataset_updated}")
+            self.log_message.emit("INFO",f"dateset_updated={dataset_updated}")
+
+            # update the data & the view
+            self.datasets[selected_index] = dataset_updated
+            self.dataset_selected(selected_index)  
+        
+        except nnunet_service.ServerError as e:
+            print(f"Server error: {e}")
+            self.log_message.emit("ERROR", f"Server error: {e}")
+        except requests.exceptions.RequestException as e:
+            print(f"Request failed: {e}")
+            self.log_message.emit("ERROR", f"Request failed: {e}")
 
     def get_server_url(self):
         """Retrieve the current server URL from the input field."""
@@ -254,7 +330,7 @@ class nnUNetDatasetManager(QObject):
 
         # Make a copy of the dataset and remove 'id'
         dataset = self.datasets[index].copy()
-        dataset.pop("id", None)  # Remove 'id' if it exists
+        #dataset.pop("id", None)  # Remove 'id' if it exists
 
         # Convert dataset dictionary to formatted JSON string
         details_json = json.dumps(dataset, indent=4)
@@ -263,3 +339,9 @@ class nnUNetDatasetManager(QObject):
         details_text = f"<pre>{details_json}</pre>"
 
         self.details_label.setHtml(details_text)  # Use HTML to render formatted JSON
+
+    def load_state(self, data_dict, data_dir, aux_data):
+        pass
+
+    def save_state(self,data_dict, data_dir):
+        pass

@@ -334,11 +334,25 @@ class SegmentationListManager(QObject):
 
         logger.info("SegmentationListManager initialized")
 
+    def get_vtk_viewer(self):
+        return self.vtk_viewer
+    
+    def get_base_vtk_image(self):
+        if self.vtk_viewer is None:
+            return None
+        
+        return self.get_vtk_viewer().get_vtk_image()
+
+    def get_segmentation_vtk_images(self):
+        vtk_images = []
+        for _, layer_data in self.segmentation_layers.items():
+            vtk_images.append(layer_data.segmentation)
+        return vtk_images
+    
     def reset_modified(self):
         self._modified = False
         for _, data in self.segmentation_layers.items():
             data.modified = False
-
        
     def modified(self):
         if self._modified:
@@ -461,7 +475,7 @@ class SegmentationListManager(QObject):
         data_dict["segmentations"] = {}
 
         for layer_name, layer_data in self.segmentation_layers.items():
-            segmentation_file = f"{layer_name}.mhd"
+            segmentation_file = f"{layer_name}.mha"
             segmentation_path = os.path.join(data_dir, segmentation_file )
             self.save_segmentation_layer(layer_data.segmentation, segmentation_path)
 

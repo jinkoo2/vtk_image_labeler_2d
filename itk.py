@@ -29,6 +29,9 @@ def rot90(sitk_image, plus: bool):
     
     return rotated_image
 
+
+
+
 def flip_x(sitk_image):
     return flip(sitk_image, axis=2)
 
@@ -63,6 +66,57 @@ def flip(sitk_image, axis):
 
     return flipped_image
 
+
+import SimpleITK as sitk
+import numpy as np
+
+def combine_sitk_labels(label_images):
+    """
+    Combine multiple binary label images into a single labeled image.
+    
+    Parameters:
+        label_images (list of sitk.Image): List of SimpleITK binary label images (0-background, 1-object).
+        
+    Returns:
+        sitk.Image: A single SimpleITK image where each object is uniquely labeled.
+    """
+    if not label_images:
+        raise ValueError("Input label_images list is empty.")
+
+    # Get image size and dimension
+    ref_size = label_images[0].GetSize()
+    ref_spacing = label_images[0].GetSpacing()
+    ref_origin = label_images[0].GetOrigin()
+    ref_direction = label_images[0].GetDirection()
+
+    # Convert all images to numpy arrays
+    label_arrays = [sitk.GetArrayFromImage(img) for img in label_images]
+
+    # Ensure all images have the same shape
+    for i, arr in enumerate(label_arrays):
+        if arr.shape != label_arrays[0].shape:
+            raise ValueError(f"Label image {i} does not match dimensions of the first label image.")
+
+    # Create an empty label map
+    combined_label_array = np.zeros_like(label_arrays[0], dtype=np.uint8)
+
+    # Assign unique labels to each object
+    for i, label_array in enumerate(label_arrays):
+        combined_label_array[label_array > 0] = i + 1  # Background remains 0, first object = 1, second = 2, etc.
+
+    # Convert back to SimpleITK image
+    combined_label_image = sitk.GetImageFromArray(combined_label_array)
+
+    # Set spatial information
+    combined_label_image.SetSpacing(ref_spacing)
+    combined_label_image.SetOrigin(ref_origin)
+    combined_label_image.SetDirection(ref_direction)
+
+    return combined_label_image
+
+def save_sitk_image(sitk_image, file_path):
+    sitk.WriteImage(sitk_image, file_path, useCompression=True)
+    print(f"Saved as {file_path}")
 
 if __name__ == '__main__':
     import numpy as np

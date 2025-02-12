@@ -75,7 +75,6 @@ def vtk_to_sitk(vtk_image):
     if hasattr(vtk_image, "GetDirectionMatrix"):
         direction_matrix = vtk_image.GetDirectionMatrix()
 
-
     # Extract the image scalars as a NumPy array
     scalars = vtk_image.GetPointData().GetScalars()
     np_array = vtk.util.numpy_support.vtk_to_numpy(scalars)
