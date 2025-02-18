@@ -268,10 +268,12 @@ class nnUNetDatasetManager(QObject):
             labels_path = os.path.join(temp_dir, f'labels_{sec}.mha')
 
             print(f'saving image to {image_path}')
-            save_sitk_image(vtk_to_sitk(vtk_image), image_path)
+            #save_as_2d_if_single_slice_3d_image=False, in nnunet everything is 3d. so, no need to save as 2d
+            save_sitk_image(vtk_to_sitk(vtk_image), image_path, save_as_2d_if_single_slice_3d_image=False)
             
             print(f'saving labels to {labels_path}')
-            save_sitk_image(sitk_labels, labels_path)
+            #save_as_2d_if_single_slice_3d_image=False, in nnunet everything is 3d. so, no need to save as 2d
+            save_sitk_image(sitk_labels, labels_path, save_as_2d_if_single_slice_3d_image=False)
 
             dataset_updated = nnunet_service.post_image_and_labels(self.get_server_url(), dataset_id, images_for, image_path, labels_path)
             print(f"response_data={dataset_updated}")

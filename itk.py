@@ -114,10 +114,40 @@ def combine_sitk_labels(label_images):
 
     return combined_label_image
 
-def save_sitk_image(sitk_image, file_path):
-    sitk.WriteImage(sitk_image, file_path, useCompression=True)
+def is_single_slice_3d_image(image):
+    # Get the image dimension
+    dimension = image.GetDimension()
+
+    # Get the size of the image (Width, Height, Depth)
+    size = image.GetSize()
+
+    return dimension == 3 and size[2] == 1
+
+def save_sitk_image(sitk_image, file_path, save_as_2d_if_single_slice_3d_image=True):
+    
+    if save_as_2d_if_single_slice_3d_image and is_single_slice_3d_image(sitk_image):
+        image_2d = convert_single_slice_3d_image_to_2d_image(sitk_image)
+        sitk.WriteImage(image_2d, file_path, useCompression=True)
+    else:
+        sitk.WriteImage(sitk_image, file_path, useCompression=True)
+
     print(f"Saved as {file_path}")
 
+def convert_single_slice_3d_image_to_2d_image(image_3d):
+    # Get image size
+    size = image_3d.GetSize()  # (width, height, depth)
+    
+    if size[2] == 1:  # Check if it's a single-slice 3D image
+        
+        # Extract the first (and only) slice
+        new_size = (size[0], size[1], 0)
+        start_index = (0, 0, 0)
+        image_2d = sitk.Extract(image_3d, new_size , start_index )
+
+        return image_2d
+    else:
+        raise Exception(f'Not a single-slice 3D image')
+    
 if __name__ == '__main__':
     import numpy as np
 
