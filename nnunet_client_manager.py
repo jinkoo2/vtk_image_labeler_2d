@@ -225,6 +225,71 @@ class nnUNetDatasetManager(QObject):
                     print(f"Request failed: {e}")
                     self.log_message.emit("ERROR", f"Request failed: {e}")
         
+
+    def post_image_and_labels_for_training_clicked(self):
+        self.post_image_and_labels("train")
+
+    def post_image_and_labels_for_test_clicked(self):
+        self.post_image_and_labels("test")
+
+    def post_image_and_labels(self, images_for):
+        selected_text = self.dropdown.currentText()
+        selected_index = self.dropdown.currentIndex()
+
+        if selected_text is "" or selected_index is -1:
+            self.log_message.emit("INFO", "Please select a dataset to add images to")
+            return 
+
+        dataset = self.datasets[selected_index]
+
+        """posting the images and labels"""
+        try:
+            if "id" in dataset:
+                dataset_id = dataset["id"]
+            else:
+                dataset_id = selected_text
+
+            # get vtk image and label list
+            vtk_image = self.segmentation_list_manager.get_base_vtk_image()
+            vtk_label_list = self.segmentation_list_manager.get_segmentation_vtk_images()
+
+            # combine the labels 
+            from itkvtk import vtk_to_sitk
+            sitk_label_list = [vtk_to_sitk(vtk_label) for vtk_label in vtk_label_list]
+            from itk import combine_sitk_labels, save_sitk_image
+            sitk_labels = combine_sitk_labels(sitk_label_list)
+
+            # save the files to a temporary folders
+            temp_dir = conf['temp_dir']
+            import time
+            sec = int(time.time())  # Current time in seconds
+            import os
+            image_path = os.path.join(temp_dir, f'image_{sec}.mha')
+            labels_path = os.path.join(temp_dir, f'labels_{sec}.mha')
+
+            print(f'saving image to {image_path}')
+            #save_as_2d_if_single_slice_3d_image=False, in nnunet everything is 3d. so, no need to save as 2d
+            save_sitk_image(vtk_to_sitk(vtk_image), image_path, save_as_2d_if_single_slice_3d_image=False)
+            
+            print(f'saving labels to {labels_path}')
+            #save_as_2d_if_single_slice_3d_image=False, in nnunet everything is 3d. so, no need to save as 2d
+            save_sitk_image(sitk_labels, labels_path, save_as_2d_if_single_slice_3d_image=False)
+
+            dataset_updated = nnunet_service.post_image_and_labels(self.get_server_url(), dataset_id, images_for, image_path, labels_path)
+            print(f"response_data={dataset_updated}")
+            self.log_message.emit("INFO",f"dateset_updated={dataset_updated}")
+
+            # update the data & the view
+            self.datasets[selected_index] = dataset_updated
+            self.dataset_selected(selected_index)  
+        
+        except nnunet_service.ServerError as e:
+            print(f"Server error: {e}")
+            self.log_message.emit("ERROR", f"Server error: {e}")
+        except requests.exceptions.RequestException as e:
+            print(f"Request failed: {e}")
+            self.log_message.emit("ERROR", f"Request failed: {e}")
+
     def get_server_url(self):
         """Retrieve the current server URL from the input field."""
         return self.server_url_input.text()
