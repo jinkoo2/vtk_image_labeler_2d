@@ -296,6 +296,8 @@ class VTKViewer(QWidget):
         self.interactor.AddObserver("MouseMoveEvent", self.on_mouse_move)
 
         self.rulers = []
+        self.vtk_image = None
+
         self.zooming = Zooming(viewer=self)
         self.panning = Panning(viewer=self)  
 
@@ -313,6 +315,9 @@ class VTKViewer(QWidget):
         if self.main_window is not None:
             self.main_window.print_status(msg)
 
+    def get_vtk_image(self):
+        return self.vtk_image
+    
     def set_vtk_image(self, vtk_image, window, level):
 
         # reset first
@@ -751,7 +756,7 @@ class MainWindow(QMainWindow):
         ##########################
         # nnUNet client manager
         from nnunet_client_manager import nnUNetDatasetManager
-        self.nnunet_client_manager = nnUNetDatasetManager(self.vtk_viewer, "nnUNet Dashboard")
+        self.nnunet_client_manager = nnUNetDatasetManager(self.segmentation_list_manager, "nnUNet Dashboard")
         toolbar, dock = self.nnunet_client_manager.setup_ui()
         if toolbar is not None:
             self.addToolBar(Qt.TopToolBarArea, toolbar)
@@ -1180,10 +1185,10 @@ class MainWindow(QMainWindow):
             print(f"File extension: {file_extension}")  # Output: .mha      
 
             image_type = ""
+            from itkvtk import load_vtk_image_using_sitk
             if file_extension == ".dcm" or is_dicom(file_path):
                 # NOTE: this did not work for RTImage reading. So, using sitk to read images.
                 #reader = vtk.vtkDICOMImageReader()
-                from itkvtk import load_vtk_image_using_sitk
                 self.vtk_image = load_vtk_image_using_sitk(file_path)
                 image_type = "dicom"
             elif file_extension == ".mhd" or file_extension == ".mha":

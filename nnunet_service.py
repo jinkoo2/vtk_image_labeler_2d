@@ -64,4 +64,38 @@ def post_dataset(BASE_URL, data):
     else:
         print(f"Failed to add a dataset: {response.status_code}, {response.text}")
         return None
-    
+
+def post_image_and_labels(BASE_URL, dataset_id, images_for, image_path, labels_path):
+    # Required metadata
+    # dataset_id = "Dataset935_Test1"
+    # images_for = "train"  # Must be "train" or "test"
+    url = f"{BASE_URL}/dataset/add_image_and_labels"
+
+    try:
+        # Open files safely using 'with' to avoid leaks
+        with open(image_path, "rb") as img_file, open(labels_path, "rb") as lbl_file:
+            files = {
+                "base_image": img_file,
+                "labels": lbl_file,
+            }
+            
+            data = {
+                "dataset_id": dataset_id,
+                "images_for": images_for,  # train or test
+            }
+                
+            response = requests.post(url, files=files, data=data)
+
+        # Print response with error handling
+        if response.status_code == 200:
+            reseponse_data = response.json()
+            print("Success:", reseponse_data)
+            return reseponse_data
+        else:
+            error_message = f"Failed to ping server: {response.status_code}, {response.text}"
+            print(error_message)
+            raise ServerError(error_message)  # Raise a custom exception for server errors
+    except requests.exceptions.RequestException as e:
+        # Handle network-related errors (e.g., connection issues)
+        print(f"An error occurred while pushing images to the server: {e}")
+        raise  # Re-raise the exception to forward it

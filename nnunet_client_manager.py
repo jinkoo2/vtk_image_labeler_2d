@@ -11,6 +11,9 @@ from color_rotator import ColorRotator
 import nnunet_service 
 import requests
 
+from config import get_config
+conf = get_config()
+
 class NewDatasetDialog(QDialog):
     """Popup window for creating a new dataset."""
 
@@ -104,9 +107,10 @@ class nnUNetDatasetManager(QObject):
 
     log_message = pyqtSignal(str, str)  # For emitting log messages
 
-    def __init__(self, vtk_viewer, name):
+    def __init__(self, segmentation_list_manager, name):
         super().__init__()
         self.name = name
+        self.segmentation_list_manager = segmentation_list_manager
         self.color_rotator = ColorRotator()
         self.datasets = []  # Ensure datasets list is initialized
 
@@ -155,6 +159,17 @@ class nnUNetDatasetManager(QObject):
         self.new_dataset_button = QPushButton("New Dataset")
         self.new_dataset_button.clicked.connect(self.open_new_dataset_dialog)
         button_layout.addWidget(self.new_dataset_button)
+
+        # Post image and label (training)
+        self.post_image_and_labels_for_training_button = QPushButton("Push Images for Training")
+        self.post_image_and_labels_for_training_button.clicked.connect(self.post_image_and_labels_for_training_clicked)
+        button_layout.addWidget(self.post_image_and_labels_for_training_button)
+
+        # Post image and label (test)
+        self.post_image_and_labels_for_test_button = QPushButton("Push Images for Test")
+        self.post_image_and_labels_for_test_button.clicked.connect(self.post_image_and_labels_for_test_clicked)
+        button_layout.addWidget(self.post_image_and_labels_for_test_button)
+
 
         layout.addLayout(button_layout)
         widget.setLayout(layout)
@@ -252,7 +267,7 @@ class nnUNetDatasetManager(QObject):
 
         # Make a copy of the dataset and remove 'id'
         dataset = self.datasets[index].copy()
-        dataset.pop("id", None)  # Remove 'id' if it exists
+        #dataset.pop("id", None)  # Remove 'id' if it exists
 
         # Convert dataset dictionary to formatted JSON string
         details_json = json.dumps(dataset, indent=4)
@@ -261,3 +276,9 @@ class nnUNetDatasetManager(QObject):
         details_text = f"<pre>{details_json}</pre>"
 
         self.details_label.setHtml(details_text)  # Use HTML to render formatted JSON
+
+    def load_state(self, data_dict, data_dir, aux_data):
+        pass
+
+    def save_state(self,data_dict, data_dir):
+        pass
