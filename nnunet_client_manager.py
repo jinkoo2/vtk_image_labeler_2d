@@ -210,8 +210,6 @@ class nnUNetDatasetManager(QObject):
                     print(f"Request failed: {e}")
                     self.log_message.emit("ERROR", f"Request failed: {e}")
         
-
-
     def get_server_url(self):
         """Retrieve the current server URL from the input field."""
         return self.server_url_input.text()
