@@ -25,6 +25,9 @@ shared/
 /build/
 dist/
 *.spec
+!packaging/app.spec
+
+.DS_Store
 
 # Installer logs
 pip-log.txt

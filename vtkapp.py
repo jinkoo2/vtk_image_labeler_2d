@@ -1460,9 +1460,46 @@ class MainWindow(QMainWindow):
         
 
 
+import sys
+
+
+SMOKE_FLAG = "--smoke-test"
+
+
+def _smoke_result_path():
+    """Writable result next to a frozen EXE, otherwise in the working directory."""
+    if getattr(sys, "frozen", False):
+        return os.path.join(os.path.dirname(sys.executable), "smoke_result.txt")
+    return os.path.join(os.getcwd(), "smoke_result.txt")
+
+
+def _run_smoke_test():
+    """Exit after imports. Headless CI cannot open a VTK window."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    path = _smoke_result_path()
+    try:
+        import itkvtk  # noqa: F401
+        import nnunet_client_manager  # noqa: F401
+
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("SMOKE_OK\n")
+        print("SMOKE_OK", flush=True)
+        return 0
+    except BaseException as exc:
+        detail = f"{type(exc).__name__}: {exc}"
+        try:
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(f"SMOKE_FAIL\n{detail}\n")
+        except OSError:
+            pass
+        print("SMOKE_FAIL", detail, flush=True)
+        return 1
+
+
 if __name__ == "__main__":
-    import sys
-    
+    if SMOKE_FLAG in sys.argv:
+        raise SystemExit(_run_smoke_test())
+
     logger.info("Application started")
 
     app = QApplication(sys.argv)
