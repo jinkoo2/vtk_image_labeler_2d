@@ -30,22 +30,18 @@ for name in ("vtk", "PyQt5", "SimpleITK"):
     except Exception as exc:  # noqa: BLE001 - best-effort collection
         print(f"collect_all({name!r}) skipped: {exc}", file=sys.stderr)
 
-try:
-    hiddenimports += collect_submodules("vtk.util")
-except Exception as exc:  # noqa: BLE001
-    print(f"collect_submodules(vtk.util) skipped: {exc}", file=sys.stderr)
-try:
-    hiddenimports += collect_submodules("vtkmodules.util")
-except Exception as exc:  # noqa: BLE001
-    print(f"collect_submodules(vtkmodules.util) skipped: {exc}", file=sys.stderr)
+for package in ("vtkmodules.util", "vtkmodules.qt"):
+    try:
+        hiddenimports += collect_submodules(package)
+    except Exception as exc:  # noqa: BLE001
+        print(f"collect_submodules({package!r}) skipped: {exc}", file=sys.stderr)
 
 hiddenimports += [
-    "vtk.util",
-    "vtk.util.numpy_support",
     "vtkmodules",
     "vtkmodules.util",
     "vtkmodules.util.numpy_support",
-    "vtk.qt.QVTKRenderWindowInteractor",
+    "vtkmodules.qt",
+    "vtkmodules.qt.QVTKRenderWindowInteractor",
     "dotenv",
     "config",
     "logger",
@@ -135,7 +131,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
-    disable_windowed_traceback=False,
+    disable_windowed_traceback=True,
 )
 
 coll = COLLECT(

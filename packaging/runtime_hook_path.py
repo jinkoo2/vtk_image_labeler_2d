@@ -1,7 +1,24 @@
 """Ensure the frozen app resolves imports and finds .env next to the executable."""
 
+import importlib
 import os
 import sys
+
+
+def _alias_vtk_modules():
+    """vtk.qt is only an alias of vtkmodules.qt. PyInstaller does not follow it."""
+    for alias, real in (
+        ("vtk.qt", "vtkmodules.qt"),
+        ("vtk.qt.QVTKRenderWindowInteractor", "vtkmodules.qt.QVTKRenderWindowInteractor"),
+        ("vtk.util", "vtkmodules.util"),
+        ("vtk.util.numpy_support", "vtkmodules.util.numpy_support"),
+    ):
+        if alias in sys.modules:
+            continue
+        try:
+            sys.modules[alias] = importlib.import_module(real)
+        except Exception:
+            pass
 
 
 def _ensure_path():
@@ -17,4 +34,5 @@ def _ensure_path():
                 pass
 
 
+_alias_vtk_modules()
 _ensure_path()

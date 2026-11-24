@@ -1,6 +1,6 @@
 import vtk
 import SimpleITK as sitk
-from vtk.util.numpy_support import numpy_to_vtk
+from vtkmodules.util.numpy_support import numpy_to_vtk, vtk_to_numpy
 import numpy as np
 
 def numpy_dtype_to_vtk_type(dtype):
@@ -29,7 +29,7 @@ def numpy_dtype_to_vtk_type(dtype):
 def sitk_to_vtk(sitk_image):
     """Convert a SimpleITK image to a VTK image."""
     import numpy as np
-    from vtk.util.numpy_support import numpy_to_vtk
+    from vtkmodules.util.numpy_support import numpy_to_vtk
 
     # Get the numpy array from SimpleITK
     np_array = sitk.GetArrayFromImage(sitk_image)
@@ -77,7 +77,7 @@ def vtk_to_sitk(vtk_image):
 
     # Extract the image scalars as a NumPy array
     scalars = vtk_image.GetPointData().GetScalars()
-    np_array = vtk.util.numpy_support.vtk_to_numpy(scalars)
+    np_array = vtk_to_numpy(scalars)
     np_array = np_array.reshape(dims[::-1])  # Reshape to (z, y, x)
 
     # Convert to a SimpleITK image

@@ -1,7 +1,68 @@
+import os
+import sys
+
+
+def _smoke_requested():
+    """Windowed Windows builds often omit argv. Read the real command line too."""
+    if "--smoke-test" in sys.argv:
+        return True
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        get_command_line = ctypes.windll.kernel32.GetCommandLineW
+        to_argv = ctypes.windll.shell32.CommandLineToArgvW
+        local_free = ctypes.windll.kernel32.LocalFree
+        get_command_line.restype = ctypes.c_wchar_p
+        to_argv.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
+        to_argv.restype = ctypes.POINTER(ctypes.c_wchar_p)
+        argc = ctypes.c_int(0)
+        argv_p = to_argv(get_command_line(), ctypes.byref(argc))
+        if not argv_p:
+            return False
+        args = [argv_p[i] for i in range(int(argc.value))]
+        local_free(argv_p)
+        return "--smoke-test" in args
+    except Exception:
+        return False
+
+
+def _run_smoke_test():
+    """Exit after imports. A windowed failure dialog would hang CI for the whole timeout."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    if getattr(sys, "frozen", False):
+        path = os.path.join(os.path.dirname(sys.executable), "smoke_result.txt")
+    else:
+        path = os.path.join(os.getcwd(), "smoke_result.txt")
+    try:
+        from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor  # noqa: F401
+        import itkvtk  # noqa: F401
+        import nnunet_client_manager  # noqa: F401
+
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("SMOKE_OK\n")
+        print("SMOKE_OK", flush=True)
+        os._exit(0)
+    except BaseException as exc:
+        detail = f"{type(exc).__name__}: {exc}"
+        try:
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(f"SMOKE_FAIL\n{detail}\n")
+        except OSError:
+            pass
+        print("SMOKE_FAIL", detail, flush=True)
+        os._exit(1)
+
+
+if __name__ == "__main__" and _smoke_requested():
+    _run_smoke_test()
+
 import vtk
 from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QSlider, QLabel, QHBoxLayout
 from PyQt5.QtCore import Qt
-from vtk.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
+from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, 
@@ -1458,46 +1519,7 @@ class MainWindow(QMainWindow):
         
 
 
-import sys
-
-
-SMOKE_FLAG = "--smoke-test"
-
-
-def _smoke_result_path():
-    """Writable result next to a frozen EXE, otherwise in the working directory."""
-    if getattr(sys, "frozen", False):
-        return os.path.join(os.path.dirname(sys.executable), "smoke_result.txt")
-    return os.path.join(os.getcwd(), "smoke_result.txt")
-
-
-def _run_smoke_test():
-    """Exit after imports. Headless CI cannot open a VTK window."""
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    path = _smoke_result_path()
-    try:
-        import itkvtk  # noqa: F401
-        import nnunet_client_manager  # noqa: F401
-
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write("SMOKE_OK\n")
-        print("SMOKE_OK", flush=True)
-        return 0
-    except BaseException as exc:
-        detail = f"{type(exc).__name__}: {exc}"
-        try:
-            with open(path, "w", encoding="utf-8") as handle:
-                handle.write(f"SMOKE_FAIL\n{detail}\n")
-        except OSError:
-            pass
-        print("SMOKE_FAIL", detail, flush=True)
-        return 1
-
-
 if __name__ == "__main__":
-    if SMOKE_FLAG in sys.argv:
-        raise SystemExit(_run_smoke_test())
-
     logger.info("Application started")
 
     app = QApplication(sys.argv)
