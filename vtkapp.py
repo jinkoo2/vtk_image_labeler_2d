@@ -243,8 +243,6 @@ class LineWidget:
                     (point2[1] - point1[1]) ** 2 +
                     (point2[2] - point1[2]) ** 2) ** 0.5
 
-        print(f"Ruler Distance: {distance:.2f} mm")
-
         # Update the text actor position 
         midpoint_w = [(point1[i] + point2[i]) / 2 for i in range(3)]
         midpoint_screen = self.world_to_display(self.renderer, midpoint_w)
