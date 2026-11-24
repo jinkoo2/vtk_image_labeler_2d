@@ -34,9 +34,8 @@ jobs:
           - os: ubuntu-22.04
             artifact: linux-x64
             shell: bash
-          - os: macos-latest
-            artifact: macos-arm64
-            shell: bash
+          # macOS builds run in release-macos.yml after this workflow
+          # publishes, so a missing Mac runner cannot block the release.
 
     defaults:
       run:
@@ -226,6 +225,8 @@ jobs:
   publish:
     name: Publish GitHub Release
     needs: build
+    # A failed platform must not skip the release when another platform built.
+    if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - name: Download all build artifacts
@@ -239,6 +240,10 @@ jobs:
           mkdir -p upload
           find release-assets -type f \( -name '*.zip' -o -name '*.tar.gz' \) -exec cp -v {} upload/ \;
           ls -lah upload
+          if [ -z "$(ls -A upload)" ]; then
+            echo "No release assets were built."
+            exit 1
+          fi
 
       - name: Resolve tag name
         id: meta

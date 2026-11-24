@@ -1,7 +1,7 @@
-name: Release (macOS x64)
+name: Release (macOS)
 
-# Runs after primary platforms finish so the slow Intel Mac build
-# does not block Windows / Linux / macOS-arm64 release publishing.
+# Runs after Windows and Linux publish so a missing Mac runner
+# cannot block the GitHub release.
 on:
   workflow_run:
     workflows: ["Release (Primary Platforms)"]
@@ -13,13 +13,22 @@ permissions:
   actions: read
 
 concurrency:
-  group: release-macos-x64-${{ github.event.workflow_run.id }}
+  group: release-macos-${{ github.event.workflow_run.id }}
   cancel-in-progress: true
 
 jobs:
-  build-and-deploy-macos-x64:
+  build-and-deploy:
+    name: Build (${{ matrix.artifact }})
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
-    runs-on: macos-13
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-13
+            artifact: macos-x64
+          - os: macos-latest
+            artifact: macos-arm64
     steps:
       - name: Download release metadata
         uses: actions/download-artifact@v4
@@ -65,7 +74,7 @@ jobs:
       - name: Stage package
         run: |
           set -euo pipefail
-          STAGE="dist/stage/ImageLabeler2D-macos-x64"
+          STAGE="dist/stage/ImageLabeler2D-${{ matrix.artifact }}"
           mkdir -p "$STAGE"
           cp -R dist/ImageLabeler2D/. "$STAGE/"
           if [ -f .env ]; then
@@ -93,7 +102,7 @@ jobs:
       - name: Ad-hoc codesign (macOS)
         run: |
           set -euo pipefail
-          STAGE="dist/stage/ImageLabeler2D-macos-x64"
+          STAGE="dist/stage/ImageLabeler2D-${{ matrix.artifact }}"
           codesign --force --deep --sign - "$STAGE/ImageLabeler2D"
           FW=$(find "$STAGE" -type d -name 'Python.framework' | head -n 1 || true)
           if [ -n "$FW" ]; then
@@ -104,7 +113,7 @@ jobs:
       - name: Smoke-test frozen app
         run: |
           set -euo pipefail
-          STAGE="dist/stage/ImageLabeler2D-macos-x64"
+          STAGE="dist/stage/ImageLabeler2D-${{ matrix.artifact }}"
           export QT_QPA_PLATFORM=offscreen
           python packaging/run_smoke_test.py "$STAGE" --timeout 120
           rm -f "$STAGE/smoke_result.txt"
@@ -112,13 +121,13 @@ jobs:
       - name: Compress package
         run: |
           cd dist/stage
-          tar -czf "../ImageLabeler2D-macos-x64.tar.gz" "ImageLabeler2D-macos-x64"
+          tar -czf "../ImageLabeler2D-${{ matrix.artifact }}.tar.gz" "ImageLabeler2D-${{ matrix.artifact }}"
 
       - name: Append to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
-          files: dist/ImageLabeler2D-macos-x64.tar.gz
+          files: dist/ImageLabeler2D-${{ matrix.artifact }}.tar.gz
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
