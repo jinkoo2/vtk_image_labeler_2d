@@ -45,6 +45,7 @@ hiddenimports += [
     "dotenv",
     "config",
     "logger",
+    "cli_args",
     "itk",
     "itkvtk",
     "vtk_tools",

@@ -59,6 +59,7 @@ def _run_smoke_test():
 if __name__ == "__main__" and _smoke_requested():
     _run_smoke_test()
 
+from cli_args import project_image_path, resolve_cli_project_path
 import vtk
 from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QSlider, QLabel, QHBoxLayout
 from PyQt5.QtCore import Qt
@@ -1233,7 +1234,10 @@ class MainWindow(QMainWindow):
         
         # save to last_directory
         settings.setValue("last_directory", os.path.dirname(file_path))
+        self.load_image_file(file_path)
 
+    def load_image_file(self, file_path):
+        settings.setValue("last_directory", os.path.dirname(file_path))
         try:
             logger.info(f"Loading image from {file_path}")
             self.image_path = file_path 
@@ -1316,9 +1320,11 @@ class MainWindow(QMainWindow):
             self.setWindowTitle(f"Image Labeler 2D - {os.path.basename(file_path)}")
             
             logger.info("Image loaded successfully")
+            return True
         except Exception as e:
             logger.error(f"Failed to load image:{e}") 
             self.show_popup("Load Image", f"Error: Load Image Failed, {str(e)}", QMessageBox.Critical)
+            return False
 
 
     def modified(self):
@@ -1436,9 +1442,6 @@ class MainWindow(QMainWindow):
             self.show_popup("Save Workspace", f"Error saving workspace: {str(e)}", QMessageBox.Critical)      
 
     def open_workspace(self):
-        import json
-        import os
-
         """Load a workspace from a folder."""
         workspace_json_path, _ = QFileDialog.getOpenFileName(self, "Select Workspace File", self.get_list_dir(), "JSON Files (*.json)")
         if not workspace_json_path:
@@ -1447,6 +1450,39 @@ class MainWindow(QMainWindow):
 
         # save to last dir
         settings.setValue('last_directory', os.path.dirname(workspace_json_path))
+        self.open_workspace_file(workspace_json_path)
+
+    def open_workspace_file(self, workspace_json_path):
+        """Open a saved workspace or a project JSON from another application."""
+        import json
+        import os
+
+        if not workspace_json_path:
+            return
+        try:
+            with open(workspace_json_path, "r") as handle:
+                workspace_data = json.load(handle)
+        except Exception as exc:
+            logger.error(f"Failed to read workspace: {exc}", exc_info=True)
+            self.print_status("Failed to load workspace. Check logs for details.")
+            self.show_popup(
+                "Open Workspace",
+                f"Could not read project file:\n{workspace_json_path}\n\n{exc}",
+                QMessageBox.Critical,
+            )
+            return
+
+        image_path = project_image_path(workspace_json_path, workspace_data)
+        if image_path is not None:
+            if not image_path or not os.path.isfile(image_path):
+                message = f"Image file not found:\n{image_path or workspace_json_path}"
+                logger.error(message)
+                self.print_status(message)
+                self.show_popup("Open Workspace", message, QMessageBox.Critical)
+                return
+            if self.load_image_file(image_path):
+                self._apply_project_window(workspace_data)
+            return
 
         data_path = workspace_json_path+".data"
         if not os.path.exists(data_path):
@@ -1456,9 +1492,6 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            with open(workspace_json_path, "r") as f:
-                workspace_data = json.load(f)
-
             logger.info(f"Loaded workspace metadata from {workspace_json_path}.")
 
             # Clear existing workspace
@@ -1506,6 +1539,22 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"Failed to load workspace: {e}", exc_info=True)
             self.print_status("Failed to load workspace. Check logs for details.")
+
+    def _apply_project_window(self, workspace_data):
+        window_settings = workspace_data.get("window_settings") or {}
+        if "level" not in window_settings or "width" not in window_settings:
+            return
+        if self.vtk_image is None:
+            return
+        try:
+            level = float(window_settings["level"])
+            width = float(window_settings["width"])
+        except (TypeError, ValueError):
+            return
+        self.range_slider.low_value = level - width / 2
+        self.range_slider.high_value = level + width / 2
+        self.range_slider.update()
+        self.vtk_viewer.set_vtk_image(self.vtk_image, width, level)
   
     def toggle_dock_widget(self, dock_widget, checked):
         # Toggle the visibility of the dock widget based on the checked state
@@ -1519,10 +1568,32 @@ class MainWindow(QMainWindow):
         
 
 
+def _strip_project_args(argv):
+    kept = [argv[0]] if argv else []
+    skip_next = False
+    for arg in argv[1:]:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in ("--project", "--open", "-p"):
+            skip_next = True
+            continue
+        if arg.startswith("--project=") or arg.startswith("--open="):
+            continue
+        if (not arg.startswith("-")) and arg.lower().endswith(".json"):
+            continue
+        kept.append(arg)
+    return kept
+
+
 if __name__ == "__main__":
     logger.info("Application started")
+    open_json = resolve_cli_project_path(sys.argv)
+    sys.argv = _strip_project_args(sys.argv)
 
     app = QApplication(sys.argv)
+    if not open_json:
+        open_json = resolve_cli_project_path(list(app.arguments()))
     
     app.setWindowIcon(QIcon(brush_icon_path))  # Set application icon
 
@@ -1530,4 +1601,9 @@ if __name__ == "__main__":
 
     main_window = MainWindow()
     main_window.show()
+    if open_json:
+        from PyQt5.QtCore import QTimer
+
+        logger.info(f"CLI project: {open_json}")
+        QTimer.singleShot(250, lambda path=open_json: main_window.open_workspace_file(path))
     sys.exit(app.exec_())
