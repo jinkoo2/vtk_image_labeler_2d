@@ -225,20 +225,16 @@ class Zooming:
         self.viewer.get_render_window().Render()
 
     def zoom_reset(self):
-        # Get the active camera
+        if self.viewer.fit_image_to_view():
+            return
         camera = self.viewer.get_renderer().GetActiveCamera()
-
         if camera.GetParallelProjection():
-            # Reset parallel projection scale
             self.viewer.get_renderer().ResetCamera()
         else:
-            # Reset perspective projection parameters
             camera.SetPosition(0.0, 0.0, 1000.0)
             camera.SetFocalPoint(0.0, 0.0, 0.0)
             camera.SetViewUp(0.0, 1.0, 0.0)
             self.viewer.get_renderer().ResetCameraClippingRange()
-
-        # Render the updated scene
         self.viewer.get_render_window().Render()
 
 class LineWidget:
@@ -276,7 +272,7 @@ class LineWidget:
         self.vtk_image = vtk_image
 
         # Attach a callback to update distance when the ruler is moved
-        widget.AddObserver("InteractionEvent", lambda obj, event: self.update_ruler_distance())
+        widget.AddObserver("InteractionEvent", lambda obj, event: self._on_interaction())
 
         # Attach the camera observer
         self.renderer.GetActiveCamera().AddObserver("ModifiedEvent", lambda obj, event: self.update_ruler_distance())
@@ -309,7 +305,13 @@ class LineWidget:
         midpoint_w = [(point1[i] + point2[i]) / 2 for i in range(3)]
         midpoint_screen = self.world_to_display(self.renderer, midpoint_w)
         representation.text_actor.SetInput(f"{distance:.2f} mm")
-        representation.text_actor.SetPosition(midpoint_screen[0], midpoint_screen[1])       
+        representation.text_actor.SetPosition(midpoint_screen[0], midpoint_screen[1])
+
+    def _on_interaction(self):
+        self.update_ruler_distance()
+        moved = getattr(self, "on_moved", None)
+        if moved:
+            moved(self)       
 
 
 class VTKViewer(QWidget):
@@ -357,9 +359,11 @@ class VTKViewer(QWidget):
 
         self.rulers = []
         self.vtk_image = None
+        self._fit_when_resized = False
 
         self.zooming = Zooming(viewer=self)
-        self.panning = Panning(viewer=self)  
+        self.panning = Panning(viewer=self)
+        self.render_window.AddObserver("WindowResizeEvent", self._on_render_window_resize)  
 
     def clear(self):
         # Remove the previous image actor if it exists
@@ -397,10 +401,52 @@ class VTKViewer(QWidget):
         self.image_actor.GetMapper().SetInputConnection(self.window_level_filter.GetOutputPort())
 
         self.get_renderer().AddActor(self.image_actor)
-        
-        self.get_renderer().ResetCamera()
+        apply_visibility = None
+        main_window = getattr(self, "main_window", None)
+        if main_window is not None:
+            apply_visibility = getattr(main_window, "_apply_base_image_visibility", None)
+        if apply_visibility:
+            apply_visibility()
+        if not self.fit_image_to_view():
+            self.get_renderer().ResetCamera()
+            self.get_render_window().Render()
 
-        self.get_render_window().Render()
+    def fit_image_to_view(self):
+        """Center the image and scale it so the whole image sits in the view."""
+        if self.vtk_image is None or getattr(self, "image_actor", None) is None:
+            return False
+        size = self.render_window.GetSize()
+        viewport_width = int(size[0])
+        viewport_height = int(size[1])
+        if viewport_width < 2 or viewport_height < 2:
+            self._fit_when_resized = True
+            return False
+        bounds = self.image_actor.GetBounds()
+        image_width = abs(bounds[1] - bounds[0])
+        image_height = abs(bounds[3] - bounds[2])
+        scale = parallel_scale_to_fit(
+            image_width, image_height, viewport_width, viewport_height
+        )
+        if scale is None:
+            self._fit_when_resized = True
+            return False
+        self.get_renderer().ResetCamera()
+        camera = self.get_renderer().GetActiveCamera()
+        camera.SetParallelProjection(True)
+        camera.SetParallelScale(scale)
+        self.get_renderer().ResetCameraClippingRange()
+        self._fit_when_resized = False
+        self.render_window.Render()
+        return True
+
+    def _on_render_window_resize(self, obj, event):
+        if self._fit_when_resized:
+            self.fit_image_to_view()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._fit_when_resized:
+            self.fit_image_to_view()
 
     def get_renderer(self):
         return self.base_renderer
@@ -484,11 +530,17 @@ class VTKViewer(QWidget):
             renderer=self.get_renderer())
         
         line_widget.widget.On()
+        line_widget.on_moved = self._on_ruler_moved
 
         # Add the ruler to the list for management
         self.rulers.append(line_widget)
 
         self.get_render_window().Render()
+
+    def _on_ruler_moved(self, ruler):
+        listener = getattr(self, "profile_listener", None)
+        if listener:
+            listener(ruler)
 
     def on_left_button_press(self, obj, event):
         self.left_button_is_pressed = True
@@ -710,7 +762,19 @@ def is_dicom(file_path):
 
 from PyQt5.QtWidgets import QMessageBox
 
-from PyQt5.QtCore import QSettings
+from PyQt5.QtCore import QEvent, QSettings
+
+from view_state import (
+    as_bool,
+    dicom_window_level,
+    dock_object_name,
+    format_window_level,
+    parallel_scale_to_fit,
+    parse_window_level,
+    slider_bounds,
+    window_level_settings_key,
+)
+
 settings = QSettings("_settings.conf", QSettings.IniFormat)
 
 
@@ -727,6 +791,10 @@ class MainWindow(QMainWindow):
         self.exclusive_actions = []
         self.managers = []
         self.vtk_image = None
+        self._manager_visibility_actions = []
+        self._manager_dock_open = {}
+        self._restoring_ui = True
+        self._pending_maximized = False
 
         ### init ui ###    
         self.setWindowTitle("Image Labeler 2D")
@@ -759,6 +827,7 @@ class MainWindow(QMainWindow):
         self.segmentation_list_manager.log_message.connect(self.handle_log_message) # Connect log messages to a handler
         self.managers.append(self.segmentation_list_manager)
         self.segmentation_list_dock_widget = dock
+        self._prepare_manager_dock(self.segmentation_list_manager, dock)
         self.add_manager_visibility_toggle_menu(self.segmentation_list_manager, True)
         
 
@@ -775,6 +844,7 @@ class MainWindow(QMainWindow):
         self.point_list_manager.log_message.connect(self.handle_log_message) # Connect log messages to a handler
         self.managers.append(self.point_list_manager)
         self.point_list_dock_widget = dock
+        self._prepare_manager_dock(self.point_list_manager, dock)
         self.add_manager_visibility_toggle_menu(self.point_list_manager, True)
 
         self.tabifyDockWidget(self.segmentation_list_dock_widget, self.point_list_dock_widget)
@@ -782,6 +852,9 @@ class MainWindow(QMainWindow):
         ##########################
         # Line List Manager
         self.line_list_manager = LineListManager(self.vtk_viewer, "Lines")
+        self.line_list_manager.profile_listener = self._activate_profile_line
+        self.line_list_manager.profile_requested.connect(self.show_line_profile)
+        self.vtk_viewer.profile_listener = self._activate_profile_ruler
         toolbar, dock = self.line_list_manager.setup_ui()
         if toolbar is not None:
             self.addToolBar(Qt.TopToolBarArea, toolbar)
@@ -792,6 +865,7 @@ class MainWindow(QMainWindow):
         self.line_list_manager.log_message.connect(self.handle_log_message) # Connect log messages to a handler
         self.managers.append(self.line_list_manager)
         self.line_list_dock_widget = dock
+        self._prepare_manager_dock(self.line_list_manager, dock)
         self.add_manager_visibility_toggle_menu(self.line_list_manager, True)
 
         self.tabifyDockWidget(self.segmentation_list_dock_widget, self.line_list_dock_widget)
@@ -809,6 +883,7 @@ class MainWindow(QMainWindow):
         self.rect_list_manager.log_message.connect(self.handle_log_message) # Connect log messages to a handler
         self.managers.append(self.rect_list_manager)
         self.rect_list_dock_widget = dock
+        self._prepare_manager_dock(self.rect_list_manager, dock)
         self.add_manager_visibility_toggle_menu(self.rect_list_manager, True)
 
         self.tabifyDockWidget(self.segmentation_list_dock_widget, self.rect_list_dock_widget)
@@ -827,6 +902,7 @@ class MainWindow(QMainWindow):
         self.nnunet_client_manager.log_message.connect(self.handle_log_message) # Connect log messages to a handler
         self.managers.append(self.nnunet_client_manager)
         self.nnunet_client_manager_widget = dock
+        self._prepare_manager_dock(self.nnunet_client_manager, dock)
         self.add_manager_visibility_toggle_menu(self.nnunet_client_manager, True)
 
         #self.tabifyDockWidget(self.nnunet_client_manager, self.rect_list_dock_widget)
@@ -834,6 +910,8 @@ class MainWindow(QMainWindow):
         # Add status bar
         self.status_bar = self.statusBar()
         self.status_bar.showMessage("Ready")  # Initial message
+
+        self._restore_session_preferences()
 
         logger.info("MainWindow initialized")
 
@@ -843,28 +921,310 @@ class MainWindow(QMainWindow):
 
 
 
+    def _prepare_manager_dock(self, manager, dock):
+        if dock is None:
+            return
+        dock.setObjectName(dock_object_name(manager.name))
+        dock.setAttribute(Qt.WA_DeleteOnClose, False)
+        if not getattr(dock, "_hide_on_close_configured", False):
+            dock._hide_on_close_configured = True
+            dock.installEventFilter(self)
+
+    def _manager_visibility_key(self, dock):
+        return f"ui/manager_visible/{dock.objectName()}"
+
     def add_manager_visibility_toggle_menu(self, manager, visible):
+        dock = manager.dock_widget
         toggle_action = QAction(manager.name, self)
         toggle_action.setCheckable(True)
-        toggle_action.setChecked(visible)
-        toggle_action.triggered.connect(lambda checked, m=manager: self.toggle_dock_widget(m.dock_widget, checked))
+        toggle_action.setChecked(bool(visible))
+        toggle_action.setToolTip(f"Show or hide {manager.name}")
+        self._manager_dock_open[id(dock)] = bool(visible)
+        toggle_action.triggered.connect(
+            lambda checked, m=manager: self._on_manager_toggle_triggered(m.dock_widget, checked)
+        )
         if visible:
-            manager.dock_widget.show()
-        else: 
-            manager.dock_widget.hide()
-
+            dock.show()
+        else:
+            dock.hide()
+        dock.visibilityChanged.connect(
+            lambda is_visible, action=toggle_action, d=dock: self._sync_manager_toggle_action(
+                action, d, is_visible
+            )
+        )
+        self._manager_visibility_actions.append((toggle_action, dock))
         self.managers_menu.addAction(toggle_action)
-        
+
+    def _on_manager_toggle_triggered(self, dock, checked):
+        self._manager_dock_open[id(dock)] = bool(checked)
+        self.toggle_dock_widget(dock, checked)
+        if checked:
+            dock.raise_()
+        if not self._restoring_ui:
+            self._save_manager_visibility()
+
+    def _sync_manager_toggle_action(self, action, dock, is_visible):
+        """Inactive tabs report not visible while the dock is still open."""
+        if action is None or dock is None:
+            return
+        if dock.isHidden():
+            self._manager_dock_open[id(dock)] = False
+            checked = False
+        elif is_visible:
+            self._manager_dock_open[id(dock)] = True
+            checked = True
+        else:
+            return
+        if action.isChecked() != checked:
+            action.blockSignals(True)
+            action.setChecked(checked)
+            action.blockSignals(False)
+        if not self._restoring_ui:
+            self._save_manager_visibility()
+
+    def _refresh_manager_visibility_checks(self):
+        for action, dock in self._manager_visibility_actions:
+            if action is None or dock is None:
+                continue
+            open_state = self._manager_dock_open.get(id(dock), not dock.isHidden())
+            action.blockSignals(True)
+            action.setChecked(bool(open_state))
+            action.blockSignals(False)
+
+    def eventFilter(self, obj, event):
+        if isinstance(obj, QDockWidget) and event.type() == QEvent.Close:
+            obj.hide()
+            self._manager_dock_open[id(obj)] = False
+            for action, dock in self._manager_visibility_actions:
+                if dock is obj:
+                    action.blockSignals(True)
+                    action.setChecked(False)
+                    action.blockSignals(False)
+                    break
+            if not self._restoring_ui:
+                self._save_manager_visibility()
+            event.ignore()
+            return True
+        return super().eventFilter(obj, event)
+
+    def _save_manager_visibility(self):
+        for action, dock in self._manager_visibility_actions:
+            if dock is None:
+                continue
+            visible = self._manager_dock_open.get(id(dock), not dock.isHidden())
+            settings.setValue(self._manager_visibility_key(dock), bool(visible))
+        settings.sync()
+
+    def _apply_saved_manager_visibility(self):
+        for action, dock in self._manager_visibility_actions:
+            if dock is None:
+                continue
+            key = self._manager_visibility_key(dock)
+            if not settings.contains(key):
+                self._manager_dock_open[id(dock)] = not dock.isHidden()
+                continue
+            visible = as_bool(settings.value(key), True)
+            self._manager_dock_open[id(dock)] = visible
+            action.blockSignals(True)
+            action.setChecked(visible)
+            action.blockSignals(False)
+            self.toggle_dock_widget(dock, visible)
+
+    def _save_ui_layout(self):
+        if self._restoring_ui:
+            return
+        settings.setValue("mainwindow/geometry", self.saveGeometry())
+        settings.setValue("mainwindow/windowState", self.saveState())
+        settings.setValue("mainwindow/maximized", self.isMaximized())
+        settings.setValue("mainwindow/width", self.width())
+        settings.setValue("mainwindow/height", self.height())
+        self._save_manager_visibility()
+        action = getattr(self, "toggle_image_action", None)
+        if action is not None:
+            settings.setValue("ui/base_image_visible", action.isChecked())
+        slider = getattr(self.segmentation_list_manager, "brush_size_slider", None)
+        if slider is not None:
+            settings.setValue("ui/brush_size", int(slider.value()))
+        url_input = getattr(self.nnunet_client_manager, "server_url_input", None)
+        if url_input is not None:
+            settings.setValue("ui/nnunet_server_url", url_input.text().strip())
+        settings.sync()
+
+    def _restore_session_preferences(self):
+        self._restoring_ui = True
+        try:
+            geometry = settings.value("mainwindow/geometry")
+            if geometry is not None:
+                self.restoreGeometry(geometry)
+            else:
+                width = settings.value("mainwindow/width")
+                height = settings.value("mainwindow/height")
+                try:
+                    if width is not None and height is not None:
+                        self.resize(int(float(width)), int(float(height)))
+                except (TypeError, ValueError):
+                    pass
+            state = settings.value("mainwindow/windowState")
+            if state is not None:
+                self.restoreState(state)
+            self._pending_maximized = as_bool(settings.value("mainwindow/maximized"), False)
+            self._apply_saved_manager_visibility()
+            self._refresh_manager_visibility_checks()
+
+            if settings.contains("ui/base_image_visible") and getattr(self, "toggle_image_action", None) is not None:
+                self.toggle_image_action.blockSignals(True)
+                self.toggle_image_action.setChecked(as_bool(settings.value("ui/base_image_visible"), True))
+                self.toggle_image_action.blockSignals(False)
+
+            slider = getattr(self.segmentation_list_manager, "brush_size_slider", None)
+            if slider is not None and settings.contains("ui/brush_size"):
+                try:
+                    slider.setValue(int(float(settings.value("ui/brush_size"))))
+                except (TypeError, ValueError):
+                    pass
+                slider.slider.valueChanged.connect(lambda _value: self._save_ui_layout())
+
+            url_input = getattr(self.nnunet_client_manager, "server_url_input", None)
+            if url_input is not None:
+                saved_url = settings.value("ui/nnunet_server_url")
+                if saved_url:
+                    url_input.setText(str(saved_url))
+                url_input.editingFinished.connect(self._save_ui_layout)
+        finally:
+            self._restoring_ui = False
+
+    def _on_base_image_toggled(self, checked):
+        self.vtk_viewer.toggle_base_image(checked)
+        if not self._restoring_ui:
+            settings.setValue("ui/base_image_visible", bool(checked))
+            settings.sync()
+
+    def _current_window_level(self):
+        return self.range_slider.get_width(), self.range_slider.get_center()
+
+    def _remember_window_level(self, level, width):
+        path = getattr(self, "image_path", None)
+        if not path or width <= 0 or self._restoring_ui:
+            return
+        settings.setValue(window_level_settings_key(path), format_window_level(level, width))
+        settings.sync()
+
+    def _remembered_window_level(self, path):
+        if not path:
+            return None
+        return parse_window_level(settings.value(window_level_settings_key(path)))
+
+    def _apply_base_image_visibility(self):
+        action = getattr(self, "toggle_image_action", None)
+        actor = getattr(self.vtk_viewer, "image_actor", None)
+        if action is None or actor is None:
+            return
+        actor.SetVisibility(action.isChecked())
+
+    def _world_points(self, representation):
+        first = representation.GetPoint1WorldPosition()
+        second = representation.GetPoint2WorldPosition()
+        return (
+            [float(first[0]), float(first[1]), float(first[2])],
+            [float(second[0]), float(second[1]), float(second[2])],
+        )
+
+    def _activate_profile_line(self, line):
+        self._profile_target = ("line", id(line))
+        self._refresh_open_profile()
+
+    def _activate_profile_ruler(self, ruler):
+        self._profile_target = ("ruler", id(ruler))
+        self._refresh_open_profile()
+
+    def _line_by_id(self, line_id):
+        for name, line in self.line_list_manager.lines.items():
+            if id(line) == line_id:
+                return name, line
+        return None
+
+    def _ruler_by_id(self, ruler_id):
+        for index, ruler in enumerate(self.vtk_viewer.rulers):
+            if id(ruler) == ruler_id:
+                return index, ruler
+        return None
+
+    def _current_profile_geometry(self):
+        target = getattr(self, "_profile_target", None)
+        if target and target[0] == "line":
+            found = self._line_by_id(target[1])
+            if found is not None:
+                name, line = found
+                p1, p2 = self._world_points(line.representation)
+                return name, p1, p2
+        if target and target[0] == "ruler":
+            found = self._ruler_by_id(target[1])
+            if found is not None:
+                index, ruler = found
+                p1, p2 = self._world_points(ruler.representation)
+                return f"Ruler {index + 1}", p1, p2
+        name = getattr(self.line_list_manager, "active_line_name", None)
+        line = self.line_list_manager.lines.get(name) if name else None
+        if line is not None:
+            p1, p2 = self._world_points(line.representation)
+            return name, p1, p2
+        if self.vtk_viewer.rulers:
+            ruler = self.vtk_viewer.rulers[-1]
+            p1, p2 = self._world_points(ruler.representation)
+            return f"Ruler {len(self.vtk_viewer.rulers)}", p1, p2
+        return None
+
+    def _refresh_open_profile(self):
+        dialog = getattr(self, "_line_profile_dialog", None)
+        if dialog is None or not dialog.isVisible():
+            return
+        from PyQt5.QtCore import QTimer
+        timer = getattr(self, "_profile_refresh_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._push_profile)
+            self._profile_refresh_timer = timer
+        timer.start(30)
+
+    def _push_profile(self):
+        dialog = getattr(self, "_line_profile_dialog", None)
+        if dialog is None or not dialog.isVisible():
+            return
+        if self.vtk_image is None:
+            dialog.show_message("Open an image first.")
+            return
+        geometry = self._current_profile_geometry()
+        if geometry is None:
+            dialog.show_message("Add a ruler or select a line.")
+            return
+        from line_profile import sample_vtk_image
+        label, p1, p2 = geometry
+        distances, values = sample_vtk_image(self.vtk_image, p1, p2)
+        dialog.show_profile(label, distances, values)
+
+    def show_line_profile(self):
+        if self.vtk_image is None:
+            self.show_popup("Line Profile", "Open an image first.")
+            return
+        self._profile_target = None
+        from line_profile import LineProfileDialog
+        dialog = getattr(self, "_line_profile_dialog", None)
+        if dialog is None:
+            dialog = LineProfileDialog(self)
+            self._line_profile_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        self._push_profile()
 
     def closeEvent(self, event):
         """
         Override the closeEvent to log application or window close.
         """
         logger.info("MainWindow is closing.")
-
-        
-
-        super().closeEvent(event)  # Call the base class method to ensure proper behavior
+        self._save_ui_layout()
+        super().closeEvent(event)
 
        
 
@@ -973,6 +1333,7 @@ class MainWindow(QMainWindow):
         
     def create_managers_menu(self, view_menu):
         self.managers_menu = view_menu.addMenu("Managers")
+        self.managers_menu.aboutToShow.connect(self._refresh_manager_visibility_checks)
 
     def create_view_menu(self, view_menu):
         
@@ -997,13 +1358,15 @@ class MainWindow(QMainWindow):
         toggle_image_button = QAction("Toggle Base Image", self)
         toggle_image_button.setCheckable(True)
         toggle_image_button.setChecked(True)
-        toggle_image_button.triggered.connect(self.vtk_viewer.toggle_base_image)
+        toggle_image_button.triggered.connect(self._on_base_image_toggled)
         view_menu.addAction(toggle_image_button)
+        self.toggle_image_action = toggle_image_button
 
 
     def create_file_toolbar(self):
         # Create a toolbar
         toolbar = QToolBar("File Toolbar", self)
+        toolbar.setObjectName("FileToolbar")
         self.addToolBar(Qt.TopToolBarArea, toolbar)
 
         # Add actions to the toolbar
@@ -1031,6 +1394,7 @@ class MainWindow(QMainWindow):
 
         # Create a toolbar
         toolbar = QToolBar("View Toolbar", self)
+        toolbar.setObjectName("ViewToolbar")
         self.addToolBar(Qt.TopToolBarArea, toolbar)
 
         # Add a label for context
@@ -1097,6 +1461,10 @@ class MainWindow(QMainWindow):
         add_ruler_action.triggered.connect(self.vtk_viewer.add_ruler)
         toolbar.addAction(add_ruler_action)
 
+        profile_action = QAction("Line Profile", self)
+        profile_action.triggered.connect(self.show_line_profile)
+        toolbar.addAction(profile_action)
+
     def rotate_plus_90_clicked(self):
         
         if self.vtk_image is None:
@@ -1135,7 +1503,7 @@ class MainWindow(QMainWindow):
         # print('direction: ', direction)
 
         # set image
-        self.vtk_viewer.set_vtk_image(self.vtk_image, self.range_slider.get_width()/4, self.range_slider.get_center())
+        self.vtk_viewer.set_vtk_image(self.vtk_image, *self._current_window_level())
         
         self.vtk_viewer.render()
 
@@ -1157,7 +1525,7 @@ class MainWindow(QMainWindow):
         self.vtk_image = sitk_to_vtk(sitk_image_rotated)
 
         # set image
-        self.vtk_viewer.set_vtk_image(self.vtk_image, self.range_slider.get_width()/4, self.range_slider.get_center())
+        self.vtk_viewer.set_vtk_image(self.vtk_image, *self._current_window_level())
         
         self.vtk_viewer.render()
 
@@ -1179,7 +1547,7 @@ class MainWindow(QMainWindow):
         self.vtk_image = sitk_to_vtk(sitk_image_flipped)
 
         # set image
-        self.vtk_viewer.set_vtk_image(self.vtk_image, self.range_slider.get_width()/4, self.range_slider.get_center())
+        self.vtk_viewer.set_vtk_image(self.vtk_image, *self._current_window_level())
         
         self.vtk_viewer.render()
 
@@ -1202,7 +1570,7 @@ class MainWindow(QMainWindow):
         self.vtk_image = sitk_to_vtk(sitk_image_flipped)
 
         # set image
-        self.vtk_viewer.set_vtk_image(self.vtk_image, self.range_slider.get_width()/4, self.range_slider.get_center())
+        self.vtk_viewer.set_vtk_image(self.vtk_image, *self._current_window_level())
         
         self.vtk_viewer.render()
 
@@ -1219,6 +1587,7 @@ class MainWindow(QMainWindow):
             self.vtk_viewer.get_render_window().Render()
 
             self.print_status(f"Window: {window}, Level: {level}")
+            self._remember_window_level(level, window)
 
     def get_list_dir(self):
         if settings.contains('last_directory'):
@@ -1314,7 +1683,7 @@ class MainWindow(QMainWindow):
             self.range_slider.high_value = scalar_range[1]
             self.range_slider.update()  
             
-            self.vtk_viewer.set_vtk_image(self.vtk_image, self.range_slider.get_width()/4, self.range_slider.get_center())
+            self.vtk_viewer.set_vtk_image(self.vtk_image, *self._current_window_level())
 
 
             self.setWindowTitle(f"Image Labeler 2D - {os.path.basename(file_path)}")
@@ -1591,19 +1960,38 @@ if __name__ == "__main__":
     open_json = resolve_cli_project_path(sys.argv)
     sys.argv = _strip_project_args(sys.argv)
 
+    from PyQt5.QtCore import QTimer
+    from splash_screen import close_splash, create_splash, show_message
+    from version import __version__
+
     app = QApplication(sys.argv)
     if not open_json:
         open_json = resolve_cli_project_path(list(app.arguments()))
-    
-    app.setWindowIcon(QIcon(brush_icon_path))  # Set application icon
 
+    app_icon = QIcon(brush_icon_path)
+    app.setWindowIcon(app_icon)
     app.aboutToQuit.connect(lambda: logger.info("Application is quitting."))
 
+    splash = create_splash(version=__version__, icon=app_icon)
+    splash.show()
+    show_message(splash, "Loading modules...")
+    show_message(splash, "Building main window...")
     main_window = MainWindow()
-    main_window.show()
-    if open_json:
-        from PyQt5.QtCore import QTimer
+    main_window.setWindowIcon(app_icon)
 
+    show_message(splash, "Ready")
+    main_window.show()
+    QApplication.processEvents()
+    close_splash(splash)
+    main_window.raise_()
+    main_window.activateWindow()
+    if open_json:
         logger.info(f"CLI project: {open_json}")
-        QTimer.singleShot(250, lambda path=open_json: main_window.open_workspace_file(path))
+
+        def _open_cli_project(path=open_json):
+            main_window.open_workspace_file(path)
+
+        # After splash + first paint. Frozen Windows apps often miss
+        # singleShot(0) while the splash is still processing events.
+        QTimer.singleShot(250, _open_cli_project)
     sys.exit(app.exec_())

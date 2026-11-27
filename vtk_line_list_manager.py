@@ -75,6 +75,9 @@ class LineItem:
         self.point1_w = self.representation.GetPoint1WorldPosition()
         self.point2_w = self.representation.GetPoint2WorldPosition()
         self.modified = True
+        moved = getattr(self, "on_moved", None)
+        if moved:
+            moved(self)
 
 
 class LineListItemWidget(QWidget):
@@ -185,6 +188,7 @@ class LineListItemWidget(QWidget):
 
 class LineListManager(QObject):
     log_message = pyqtSignal(str, str)  # For emitting log messages
+    profile_requested = pyqtSignal()
 
     def __init__(self, vtk_viewer, name):
         super().__init__()
@@ -226,6 +230,10 @@ class LineListManager(QObject):
         add_line_button.clicked.connect(self.add_line_clicked)
         button_layout.addWidget(add_line_button)
 
+        profile_button = QPushButton("Line Profile")
+        profile_button.clicked.connect(self.profile_requested.emit)
+        button_layout.addWidget(profile_button)
+
         layout.addLayout(button_layout)
         widget.setLayout(layout)
         dock.setWidget(widget)
@@ -262,6 +270,7 @@ class LineListManager(QObject):
                 # Update the active line name
                 self.active_line_name = name
                 print(f"Line {name} selected")
+                self._notify_profile(line)
 
                 # Render the updated scene
                 self.vtk_viewer.get_render_window().Render()
@@ -312,6 +321,7 @@ class LineListManager(QObject):
             name = self.generate_unique_name()
 
         self.lines[name] = line
+        line.on_moved = self._notify_profile
 
         item_widget = LineListItemWidget(name, line, self)
         item = QListWidgetItem()
@@ -376,6 +386,11 @@ class LineListManager(QObject):
 
     def on_line_changed(self, name):
         self.vtk_renderer.GetRenderWindow().Render()
+
+    def _notify_profile(self, line):
+        listener = getattr(self, "profile_listener", None)
+        if listener:
+            listener(line)
 
     def update_line_name(self, old_name, new_name):
         if old_name in self.lines:

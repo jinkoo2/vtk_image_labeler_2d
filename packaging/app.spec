@@ -46,6 +46,8 @@ hiddenimports += [
     "config",
     "logger",
     "cli_args",
+    "splash_screen",
+    "version",
     "itk",
     "itkvtk",
     "vtk_tools",
@@ -58,6 +60,8 @@ hiddenimports += [
     "vtk_segmentation_list_manager",
     "vtk_point_list_manager",
     "vtk_line_list_manager",
+    "line_profile",
+    "matplotlib.backends.backend_qt5agg",
     "vtk_rect_list_manager",
 ]
 
